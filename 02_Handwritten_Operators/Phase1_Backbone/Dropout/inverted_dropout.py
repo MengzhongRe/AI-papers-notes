@@ -81,7 +81,7 @@ class CustomDropout(nn.Module):
     """
     def __init__(self, p: float):
         super().__init__()
-        assert 0.0 <= p <= 1.0, 'p must be in [0,1]'
+        assert 0.0 <= p < 1.0, 'p must be in [0,1)'
         self.p = p
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:

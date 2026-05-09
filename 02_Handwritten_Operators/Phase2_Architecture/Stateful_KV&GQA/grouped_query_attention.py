@@ -27,7 +27,6 @@ class GroupedQueryAttention(nn.Module):
         x: [Batch_size,Seq_len,d_model]
         past_key_value:tuple of (past_keys,past_values)
         use_cache:是否返回当前的KVCache供下一步解码使用
-
         """
         B,N_curr,_ = x.size()
         # ====================
@@ -46,10 +45,10 @@ class GroupedQueryAttention(nn.Module):
             past_k,past_v = past_key_value
             # 将当前的k,v与缓存中的k,v拼接
             # past_k: [B,num_kv_heads,N_past,head_dim]
-            # 拼接后的k的维度:[B,num_kv_heads,N_past + N_curr,head_dim]
+            # 拼接后的k,v的维度:[B,num_kv_heads,N_past + N_curr,head_dim]
             k = torch.cat([past_k,k],dim=2)
             v = torch.cat([past_v,v],dim=2)
-        
+
         # 如果需要缓存把当前最新完整的K，V保存下来
         present_key_value = (k,v) if use_cache else None
 
@@ -63,8 +62,8 @@ class GroupedQueryAttention(nn.Module):
         # 步骤一:unsqueeze(2)变成[B,num_kv_heads,1,N_kv,head_dim]
         # 步骤二:expand扩展为[B,num_kv_heads,num_queries_per_kv,N_kv,head_dim]，此操作不分配新物理内存
         # 步骤三：reshape压平为[B,num_heads,N_kv,head_dim]
-        k_expanded = k.unsqueeze(2).expand(B,self.num_kv_heads,self.num_queries_per_kv,N_kv,self.head_dim).reshape(B,self.num_heads,N_kv,self.head_dim)
-        v_expanded = v.unsqueeze(2).expand(B,self.num_kv_heads,self.num_queries_per_kv,N_kv,self.head_dim).reshape(B,self.num_heads,N_kv,self.head_dim)
+        k_expanded = k.unsqueeze(2).expand(B,self.num_kv_heads,self.num_queries_per_kv,N_kv,self.head_dim).view(B,self.num_heads,N_kv,self.head_dim)
+        v_expanded = v.unsqueeze(2).expand(B,self.num_kv_heads,self.num_queries_per_kv,N_kv,self.head_dim).view(B,self.num_heads,N_kv,self.head_dim)
 
         # ===============================
         # 4. 计算缩放点积注意力
@@ -81,7 +80,7 @@ class GroupedQueryAttention(nn.Module):
             mask = torch.tril(torch.ones(N_curr,N_kv,device=x.device)).bool()
             scores = scores.masked_fill(~mask,-1e9)
         
-        # 计算注意力全中
+        # 计算注意力权重
         attention_weights = torch.softmax(scores,dim=-1)
         # 正则化
         attention_weights = self.dropout(attention_weights)
@@ -107,7 +106,7 @@ if __name__ == '__main__':
 
     gqa = GroupedQueryAttention(d_model=d_model,num_heads=num_heads,num_kv_heads=num_kv_heads)
 
-    print('=================阶段一：Prefill(预填充阶段)=================')
+    print('=================阶段一:Prefill(预填充阶段)=================')
     # 用户输入了长度为10的prompt
     seq_len = 10
     x_prefill = torch.randn(B,seq_len,d_model)
@@ -126,10 +125,10 @@ if __name__ == '__main__':
     out_decode_1,kv_cache = gqa(x_decode_step_1,past_key_value=kv_cache,use_cache=True)
 
     print(f'Decoding Step 1 输出维度:{out_decode_1.shape}') # 期望：[2,1,4096]
-    print(f'更新后的KV cahce的维度： {kv_cache[0].shape}') # 期望: [2,8,11,128]
+    print(f'更新后的KV cahce的维度: {kv_cache[0].shape}') # 期望: [2,8,11,128]
 
     # 模型吐出第十二个词
     x_decode_step_2 = torch.randn(B,1,d_model)
     out_decode_2,kv_cache = gqa(x_decode_step_2,past_key_value=kv_cache,use_cache=True)
     print(f'Decoding Step 2 输出维度:{out_decode_2.shape}') # 期望：[2,1,4096]
-    print(f'更新后的KV cahce的维度： {kv_cache[0].shape}') # 期望: [2,8,12,128]
+    print(f'更新后的KV cahce的维度: {kv_cache[0].shape}') # 期望: [2,8,12,128]

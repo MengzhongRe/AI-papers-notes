@@ -3,15 +3,18 @@
 # ==========================================
 import torch
 import torch.nn as nn
+import torch._dynamo
+# 把重编译上限提高到 64 次（默认是 8）
+torch._dynamo.config.recompile_limit = 64
 
 class MyRMSNorm(nn.Module):
-    def __init__(self,dim: int, eps: float=1e-5):
+    def __init__(self, dim: int, eps: float=1e-5):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim)) # \\gamma,缩放因子，每个维度独立训练一个缩放因子
         # RMSNorm只有缩放因子gamma，没有平移因子beta
     
-    def forward(self,x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 输入维度: [B,L,dim]
         # 先将输入数据从原数据类型(fp16、bf16)转换为fp32，防止后续在计算平方和时数值溢出,NaN
         x_fp32 = x.float()

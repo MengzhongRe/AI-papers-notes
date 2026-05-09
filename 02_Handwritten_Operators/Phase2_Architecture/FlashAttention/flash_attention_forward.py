@@ -7,10 +7,10 @@ import math
 
 def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: bool = True, block_size: int = 64) -> torch.Tensor:
     """
-    实现FlashAttention-2,外层Q,O循环;内层K,V,并兼容快速掩码矩阵的前向传播函数
+    实现FlashAttention-v2,外层Q,O循环;内层K,V,并兼容快速掩码矩阵的前向传播函数
     参数:
         Q: [B,H,N,d],HBM中的query矩阵
-        K: [B,H,N,d],HBm中的key矩阵
+        K: [B,H,N,d],HBM中的key矩阵
         V: [B,H,N,d],HBM中的value矩阵
         mask: 是否实现因果掩码
         block_size: Bc,Br的大小
@@ -42,7 +42,7 @@ def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, m
         mi = m[:, :, r_start:r_end, :].clone()
         li = l[:, :, r_start:r_end, :].clone() 
 
-        # 外层循环kj,vj
+        # 内层循环kj,vj
         for j in range(Tc):
             # 如果是全掩蔽，直接跳过
             if mask and (j > i):
@@ -114,7 +114,7 @@ def test_flash_attention():
     # 3.计算flash_attention的O
     O_flash = flash_attention_forward(Q,K,V,mask=True,block_size=64)
 
-    # 4.计算标准注意力的输出O: [B,H,N,N]
+    # 4.计算标准注意力的输出O_std: [B,H,N,d]
     scores = torch.matmul(Q,K.transpose(-2,-1)) / math.sqrt(d)
     # 创造下三角因果掩码矩阵
     causal_mask = torch.tril(torch.ones(1,1,N,N)).to(device)

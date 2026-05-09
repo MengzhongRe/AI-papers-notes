@@ -17,8 +17,8 @@ def _rmsnorm_fwd_fused(
 ):  
     # 获取当前线程ID
     # 假设输入有2048个token,GPU就会派出2048个Block
-    # # program_id(0)获取的是当前正在处理第几个token（也就是第几行）  
-    row_idx = tl.program_id(0)
+    # program_id(0)获取的是当前正在处理第几个token（也就是第几行）  
+    row_idx = tl.program_id(axis = 0)
 
     # 2.找到属于我的那一堆食材
     # 起始地址 + 行号 * 每行跨度
@@ -54,7 +54,7 @@ def _rmsnorm_fwd_fused(
 # ==============================================================
 # CPU Wrapper： Pytorch调度器，负责计算Grid 和 Block大小并调用 Kernel
 # ===============================================================
-def triton_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps:float=1e-5):
+def triton_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps:float=1e-5) -> torch.Tensor:
     # 1.无论是[B,L,D]还是[B,L,K,D]，我们统统把前面压扁成 2D: [tokens总数,Dim]
     x_2d = x.view(-1,x.shape[-1])
     n_tokens,dim = x_2d.shape
