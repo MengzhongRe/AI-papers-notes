@@ -1,134 +1,38 @@
-# 🧠 背景理论课：RoPE 到底在解决什么绝世难题？
+# RoPE：旋转位置编码 — 手撕实现
 
-### 1. 灾难起源：Transformer 是个“词袋子” (Bag of Words)
-我们知道，Attention 的核心是计算 Query 和 Key 的内积：$Score = q \cdot k^T$。
-但在纯粹的内积计算中，**“狗咬人”和“人咬狗”算出来的 Attention 分数是一模一样的！** 因为矩阵乘法本身不包含任何“位置”或“先后顺序”的信息。
+本目录包含 RoPE（Rotary Position Embedding）的手撕实现，涵盖固定频率预计算、解耦旋转、以及 Prefill/Decode 双阶段的位置编码应用。
 
-为了让模型知道词的先后顺序，先驱者们想了两条路：
-*   **绝对位置编码 (Absolute PE)**：像 Transformer 原论文那样，给第 $m$ 个位置的词向量加上一个固定的向量 $P_m$。缺点是：模型很难直接学到“相对距离”（比如 A 在 B 前面 3 个词）。
-*   **相对位置编码 (Relative PE)**：像 T5 或 ALiBi 那样，在计算完 $q \cdot k^T$ 之后，直接强行在分数上减去一个和距离 $(m-n)$ 相关的惩罚项。缺点是：破坏了优美的矩阵乘法结构，且无法享受极致的 FlashAttention 硬件加速。
+## 目录结构
 
-### 2. 苏剑林的绝杀 (RoPE 的 Aha Moment)
+```
+RoPE/
+├── README.md                   # 本文件 — 目录索引与学习路径
+├── rope_embedding.py           #   基础 RoPE 实现（固定位置频率表）
+├── rope_embedding_position.py  #   扩展版：支持 position_ids 的动态推理
+└── rope_notes.md               #   深度知识库：位置编码编年史 → RoPE 理论 → 工程实现
+```
 
-2021年，国内大神苏剑林（RoFormer 作者）提出了一个极其优雅的数学反问：
-**“我们能不能在输入向量 $q$ 和 $k$ 上注入绝对位置信息，但在它们做内积 $q \cdot k^T$ 的时候，自动变成相对位置信息？”**
+## 组件速览
 
-也就是寻找一个魔法函数 $f$，使得：
-$$ \langle f(q, m), f(k, n) \rangle = g(q, k, m-n) $$
-*(第 $m$ 个位置的 $q$ 与第 $n$ 个位置的 $k$ 的内积，只与它们本身的特征 $q,k$ 以及它们的相对距离 $m-n$ 有关！)*
+| 文件 | 一句话定位 | 读者 |
+| :--- | :--- | :--- |
+| [rope_utils.py](rope_utils.py) | 共享工具函数：`precompute_freqs_cos_sin` + `rotate_half` | 被下面两个文件共同引用 |
+| [rope_embedding.py](rope_embedding.py) | 基础 RoPE：使用共享函数实现 `apply_rotary_emb` | 先看这里理解基础 |
+| [rope_embedding_position.py](rope_embedding_position.py) | 动态推理版：支持 `position_ids`，演示 Prefill vs Decode | 理解推理时位置编码 |
+| [rope_notes.md](rope_notes.md) | 完整知识库：词袋子问题 → Long Term Decay → 混合精度保护 → PyTorch 细节 | 通关后精读 |
 
-**答案就在高中数学里：复数乘法与欧拉公式！**
+## 快速运行
 
-### 3. 高维空间的几何旋转 (The Math of RoPE)
+```bash
+python rope_embedding.py
+python rope_embedding_position.py
+```
 
-为了实现上面的魔法，RoPE 采取了以下极度优美的几何操作：
+## 建议学习路径
 
-1.  **两两分组**：把大模型比如 4096 维的 Query 向量，切成 2048 个 2D 平面（每 2 个维度组成一个复平面上的坐标 $(x_1, x_2)$）。
-2.  **绝对位置 = 旋转角度**：我们给每一个二维平面定义一个基础旋转频率 $\theta_i$。对于处于第 $m$ 个位置的 Token，我们就把它的二维向量，在复平面上**旋转 $m \times \theta_i$ 的角度**。
-    *   *逻辑直觉*：Token 越靠后（$m$ 越大），转的角度就越大。仿佛每个 Token 身上都带着一个按不同速度旋转的时钟指针。
-3.  **奇迹发生（内积的相对性）**：
-    在复数空间里，两个复数向量的内积，等于它们的模长相乘，再乘以它们**夹角的余弦**。
-    *   $q$ 被旋转了 $m\theta$
-    *   $k$ 被旋转了 $n\theta$
-    *   那么它们在复平面上的**夹角**自然就是 $(m-n)\theta$！
-    *   **Boom 💥！** 当它们做内积时，绝对位置 $m$ 和 $n$ 消失了，只剩下了相对距离 $(m-n)$！
-
-这就是 RoPE (Rotary Position Embedding) 名字的由来：**通过旋转绝对角度，内积出相对距离。**
-
----
-
-# 🛠️ 任务解构：我们将要在代码里实现什么？
-
-虽然复数理论很优美，但在 GPU 上用复数类型（`complex64`）算矩阵乘法非常慢。
-所以，原论文 **Sec 3.4 公式 34** 将这个复数旋转，巧妙地化简成了**纯实数的张量运算**。这也是你接下来要手写的核心公式！
-
-### 核心公式 34 翻译成“人话”：
-对于一个二维向量 $[x_0, x_1]$，旋转 $m\theta$ 相当于：
-$$ \text{Rotated} = \begin{pmatrix} x_0 \\ x_1 \end{pmatrix} \otimes \cos(m\theta) + \begin{pmatrix} -x_1 \\ x_0 \end{pmatrix} \otimes \sin(m\theta) $$
-
-*   $\otimes$ 是逐元素相乘。
-*   $\begin{pmatrix} -x_1 \\ x_0 \end{pmatrix}$ 实际上就是把原来的向量**切成两半，翻转位置，并把前半部分取负号**。（在代码里我们通常叫这个操作为 `rotate_half`）。
-
-### Day 7-10 攻克的 3 大工程关卡：
-
-1.  **预计算 Cos/Sin 缓存 (Precompute Cache)**
-    *   *问题*：大模型能处理几十万长度的文本（Seq_len = 128k）。如果在前向传播时，每次都去算 `cos(m*theta)` 和 `sin(m*theta)`，GPU 会慢到哭。
-    *   *解法*：在模型初始化时，我们直接算出一张巨大的“三角函数查表 (Lookup Table)”。输入什么长度的序列，我们就直接从表里切出一块 `cos` 和 `sin` 矩阵来用。
-2.  **解耦 RoPE (Decoupled RoPE) —— 2026年面试必考！**
-    *   *问题*：传统的 LLaMA-2，会对 $Q$ 和 $K$ 的**所有**维度（比如全 128 维的 head_dim）做旋转。但 DeepSeek 发现，旋转信息其实不需要占据所有维度。
-    *   *解法*：DeepSeek-V2 的 MLA 架构提出，我们只取 $Q$ 和 $K$ 的**前一半维度**（比如 64 维）做 RoPE 旋转，剩下的一半维度保持原样不动。这叫做**局部 RoPE (Partial RoPE)**。你必须在代码里支持传入一个 `rope_dim` 参数，来实现切片旋转再拼接。
-3.  **精度保护 (`bf16` -> `fp32`)**
-    *   *问题*：三角函数 `cos` 和 `sin` 对精度极度敏感。如果在 `bf16` 的低精度下算，长文本后期的旋转角度会产生剧烈误差，导致模型变“傻”。
-    *   *解法*：必须把 $X$ 强制 `.float()` 转换成 `fp32` 算完公式 34 后，再转回 `bf16`。你已经在 RMSNorm 里演练过这个保命技巧了！
-
----
-
-### 🧠 架构师源码深度导读 (Why we write it this way)
-
-如果你拿着这段代码去大厂面试，你可以用以下三个锚点彻底征服面试官：
-
-**1. 为什么 `freqs_outer` 要用 `torch.cat` 复制一遍？（第25行）**
-在理论推导中，二维复平面里的 `x1` 和 `x2` 共享同一个旋转角度 $m\theta_i$。在工程实现上，HuggingFace 和 LLaMA 并没有用相邻的奇偶位相配对（`[x0, x1], [x2, x3]`），而是直接**把特征从中间劈开配对**（`[x0, x_d/2]` 配对）。
-所以我们把计算出来的角度数组拼接一次：`[θ0, θ1, ..., θ0, θ1, ...]`。这恰好对应了 `rotate_half` 里 `x.chunk(2)` 的切分方式。这是一种为了极致贴合 GPU 内存连续性读取的魔改手段！
-
-**2. 为什么 `rotate_half` 这么写，不需要创建新内存？（第38行）**
-`chunk` 操作在 PyTorch 底层仅仅是生成了两个新的 **View（视图）**。它们依然共享原本的物理内存，只改变了读取的指针步长 (stride)。所以 `torch.cat` 拼接时，内存极其干净利落，几乎是 $O(1)$ 的开销。这就是所谓的“用时间复杂度的降维，换取空间复杂度的白嫖”。
-
-**3. 解耦机制 (`rope_dim`) 到底赢在哪？（第57行）**
-在原生 LLaMA 中，128 维全转。但在 DeepSeek 的 MLA（Multi-Head Latent Attention）中，Query 会被降维压缩。如果不解耦，全旋转会破坏压缩后的潜在语义（Latent Semantics）。通过在 128 维中**只抽离 64 维做 RoPE**（正如你代码里做的），另外 64 维原封不动地传递，不仅省下了一半的旋转算力，更保住了深层语义的纯洁性。
-
-##  RoPE 实现的两大宗派：“交叉派 (Interleaved)” vs “切半派 (Half-Split)”
-
-### 🗡️ 宗派一：数学原教旨主义（交叉派 / Interleaved）
-
-这正是你脑海中、以及苏剑林原论文公式里的完美几何图像。
-*   **向量 $x$**：$[x_0, x_1, x_2, x_3]$
-*   **配对方式**：相邻两项配对。$(x_0, x_1)$ 构成平面 0，$(x_2, x_3)$ 构成平面 1。
-*   **你想要的 `rotate_half`**：$[-x_1, x_0, -x_3, x_2]$。
-*   **你想要的频率表**：$[\theta_0, \theta_0, \theta_1, \theta_1]$。
-    * *(在代码里需要用 `torch.repeat_interleave(freqs, 2, dim=-1)` 来生成)*。
-
-如果按照这个派别写代码，你的逻辑是 100% 完美的，早期的某些模型（如 GPT-J，或者原版 RoFormer）确实是这么写的。
-
----
-
-### 🛡️ 宗派二：工程实用主义（切半派 / Half-Split）——也就是我给你的代码
-
-后来，Meta 的工程师在写 LLaMA，以及 HuggingFace 的团队在重构底层框架时，他们盯着“交叉派”的代码，皱起了眉头。
-
-**工程师的痛苦（Memory Coalescing 的阻碍）**：
-为了实现相邻交换 `[-x_1, x_0, -x_3, x_2]`，在底层的 CUDA 内存读取时，通常需要用到切片 `x[..., 0::2]` 和 `x[..., 1::2]`。这种**跨步读取（Strided Access）**在某些早期的编译器或硬件层面上，容易打破连续内存读取（Memory Coalescing）的连续性，虽然微小，但不够“丝滑”。
-
-**工程师的“移花接木”魔改**：
-工程师们一拍脑袋：“等等！神经网络的隐藏维度（Hidden Dimension）本来就是通过矩阵乘法混在一起的，第 0 维和第 1 维并没有什么特殊的绑定关系。**只要我在 Query 和 Key 上保持相同的配对规则，我为什么非要让‘相邻’的两个维度组成复平面呢？**”
-
-于是，Meta 和 HuggingFace 做了一个惊天魔改：
-*   **新的配对方式**：把前一半的维度和后一半的维度，**遥相呼应**地配对！
-    让 $x_0$ 和 $x_2$ 组成平面 0！
-    让 $x_1$ 和 $x_3$ 组成平面 1！
-*   **魔改后的 `rotate_half`**：
-    原来的 $x$ 切成两半：$[x_0, x_1]$ 和 $[x_2, x_3]$。
-    前半部分去后面，后半部分取负去前面，得到：$\mathbf{[-x_2, -x_3, x_0, x_1]}$！
-    *(这正是 `chunk(2)` 和 `cat(-x2, x1)` 干的事情！)*
-*   **魔改后的频率表**：
-    既然 $x_0$ 和 $x_2$ 是一对，它们都需要 $\theta_0$。
-    既然 $x_1$ 和 $x_3$ 是一对，它们都需要 $\theta_1$。
-    所以，频率张量必须是：$\mathbf{[\theta_0, \theta_1, \theta_0, \theta_1]}$！
-    *(这正好就是 `torch.cat([freqs, freqs], dim=-1)` 的绝妙之处！)*
-
----
-
-### 💡 惊人的数学等价性 (The Isomorphism)
-
-你可能会问：这两种排布算出来的 Attention 分数一样吗？
-
-**数学上，绝对等价！**
-回忆我们之前讲的高维 $g$ 函数（实部求和）：
-$$ \text{Score} = \sum (\text{各个二维平面的点积}) $$
-
-*   **交叉派**算的是：平面 $(q_0, q_1)$ 与 $(k_0, k_1)$ 的旋转点积 + 平面 $(q_2, q_3)$ 与 $(k_2, k_3)$ 的旋转点积。
-*   **切半派**算的是：平面 $(q_0, q_2)$ 与 $(k_0, k_2)$ 的旋转点积 + 平面 $(q_1, q_3)$ 与 $(k_1, k_3)$ 的旋转点积。
-
-因为加法满足交换律，只要你在 $Q$ 和 $K$ 上应用了**完全相同**的“切半旋转”法则，最后做矩阵乘法 $Q \cdot K^T$ 累加求和时，得到的分数**完全一模一样，小数点后 10 位都不差！**
-
-而“切半派”在代码实现上，`chunk(2)` 和 `cat` 操作在 PyTorch 底层对物理内存极其友好，不打乱数据块的连续性，成为了事实上的**“工业界默认标准”**。
+| 顺序 | 文件 | 核心问题 |
+| :--- | :--- | :--- |
+| 1 | [rope_notes.md Part I](rope_notes.md) | 为什么需要位置编码？绝对 vs 相对？ |
+| 2 | [rope_notes.md Part II](rope_notes.md) | RoPE 核心理论：复数旋转、远程衰减证明 |
+| 3 | [rope_embedding.py](rope_embedding.py) | precompute_freqs_cos_sin 怎么预计算？rotate_half 怎么实现解耦？ |
+| 4 | [rope_embedding_position.py](rope_embedding_position.py) | 推理时 position_ids 怎么用？Prefill vs Decode 的区别？ |

@@ -8,19 +8,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 
-# ===========================================================
-# 模块一: 导入SwiGLUFFN
-# ===========================================================
 import sys
-from  pathlib import Path
-# 获取当前.py执行文件的Path路径对象并用resolve()将其转换为绝对路径
-current_dir = Path(__file__).resolve()
-# 获取当前文件的父目录的上一级目录
-parent_dir = current_dir.parent.parent
-# 将该目录对象转换为字符串加入到sys.path即Python的模块搜索路径中
-sys.path.append(str(parent_dir))
-# 导入SwiGLUFFN
-from FFN.swiglu_ffn import SwiGLUFFN
+from pathlib import Path
+from moe_utils import compute_aux_loss
+try:
+    from FFN.swiglu_ffn import SwiGLUFFN
+except ImportError:
+    current_dir = Path(__file__).resolve()
+    parent_dir = current_dir.parent.parent
+    sys.path.append(str(parent_dir))
+    from FFN.swiglu_ffn import SwiGLUFFN
 
 # =============================================================
 # 模块二:实现MoELayer(Naive Loop)类
@@ -47,41 +44,16 @@ class NaiveMoELayer(nn.Module):
         total_tokens = x_flat.shape[0]    # B * L
 
         # ===========================================================
-        # 1.计算路由分数：输入x送入路由层计算xWg,再用topk截断和softmax归一化
-        # ============================================================
-        # 将x_flat放入路由层:[total_tokens,D] -> [total_tokens,num_experts]
+        # 1. 计算路由分数：输入 x 送入路由层计算 xWg，再用 topk 截断和 softmax 归一化
+        # ===========================================================
         logits = self.router(x_flat)
 
-        # 计算用于辅助损失的概率Pi(x) = Softmax(xWg)，即每个token被分配到每个专家的概率分布
-        # 逻辑：这是每个专家被选中的意愿
-        probs = F.softmax(logits,dim=-1)    # [B * L,num_experts]
-        P = torch.mean(probs,dim=0) # [num_experts] 每个专家被选中的平均概率
+        # 用 torch.topk 将输入的原始 logits 根据 topk 截断
+        weights, indices = torch.topk(logits, self.topk, dim=-1)  # [total_tokens, topk]
+        weights = F.softmax(weights, dim=-1).type_as(x)
 
-        # 计算用于辅助损失的频率f(离散、不可导，但作为系数)
-        # 逻辑：这是每个专家实际被选中的频率
-        # 我们看top-1选了谁
-        ### top1_indices = torch.argmax(logits,dim=-1)  # [B * L] 每个token被分配到哪个专家的索引
-        # 用one_hot统计频率 F: [num_experts]每个专家被分配到的平均频率
-        ### f = torch.mean(F.one_hot(top1_indices,num_classes=len(self.experts)).float(),dim=0)
-
-        # 用torch.topk将输入的原始logits根据topk截断
-        # torch.topk会返回(截断后的张量，索引)元组
-        # 其中weights表示最大的k个数的张量（降序排列）
-        # indices表示这最大的k个数在原来张量中的位置索引
-        weights,indices = torch.topk(logits,self.topk,dim=-1)
-        # weights的形状是: [total_tokens, topk]，indices的形状也是: [total_tokens, topk]
-        # 将截断后的张量送入softmax归一化，并使用type_as()函数使其与x保持同样的数据类型和设备位置
-        weights = F.softmax(weights,dim=-1).type_as(x)  # [total_tokens,topk]
-
-        # 计算每个专家被选中为top-k频率
-        mask = torch.zeros_like(logits)
-        # scatter_函数在mask的dim=1,在indices位置填1.0，即被选中的专家填1.0
-        mask.scatter_(1,indices,1.0)
-        f = mask.mean(dim=0)
-
-        # 最终辅助损失:f 与 P 的点积
-        # 乘以专家数量N是为了让Loss的量级与层数无关
-        aux_loss =len(self.experts) * torch.sum(f * P,dim=0)
+        # 计算辅助损失
+        aux_loss = compute_aux_loss(logits, indices, len(self.experts))
 
         # 2.初始化输出
         # 我们需要一个和x_flat形状一样的全零张量来累加结果
@@ -166,13 +138,14 @@ def test_run():
     # 测试三：Naive 版本推理耗时
     # ======================================================
     # 第一个torch.cuda.synchronize用于清空之前GPU执行的其他任务，避免影响后续的计时
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
     start = time.time()
     for _ in range(10):
         _ = moe_layer(x)
-    # 第二个用于等待GPU执行完毕以上循环之后再返回给CPU
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     end = time.time()
     avg_time = (end - start) / 10
     print(f'Naive版本推理平均耗时为: {avg_time * 1e3:.4f} ms')

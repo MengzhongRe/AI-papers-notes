@@ -1,84 +1,114 @@
-欢迎进入 **Phase 2：推理加速与极致显存魔术**。如果说 Phase 1 是在构建 LLM 的“灵魂”和“肉体”，那么 Phase 2 就是在研究如何让这个庞然大物在有限的显存资源下**跑得飞快**。
+# Phase 2：推理加速与显存管理
 
-在 2026 年的大厂面试中，Phase 1 的算子实现只是门槛，**Phase 2 的内存架构与推理优化才是区分“调包侠”与“架构师”的分水岭。**
+从零实现 LLM 推理加速的核心算子：Online Softmax 分块注意力、KV Cache/GQA 状态管理、PagedAttention 虚拟内存映射、RadixAttention 前缀树缓存、MLA 低秩注意力、W8A8 量化。
 
----
+## 目录结构
 
-### 🧠 核心背景知识：为什么要有 Phase 2？
+```
+Phase2_Architecture/
+├── README.md                        # 本文件 — 目录索引与学习路线
+├── FlashAttention/                  # Online Softmax 分块注意力
+│   ├── README.md
+│   ├── online_softmax.py
+│   ├── flash_attention_forward.py
+│   └── flash_attention_notes.md
+├── Stateful_KV_GQA/                 # 状态化 KV Cache + 分组查询注意力
+│   ├── README.md
+│   ├── gqa_attention_base.py
+│   ├── grouped_query_attention.py
+│   ├── stateful_kvcache_gqa.py
+│   └── kv_cache_prefill_decode_notes.md
+├── PagedAttention/                  # vLLM 物理块表 + 零拷贝碎片化 Attention
+│   ├── README.md
+│   ├── paged_attention.py
+│   └── paged_attention_notes.md
+├── RadixAttention/                  # SGLang 前缀树缓存 + LRU 驱逐
+│   ├── README.md
+│   ├── radix_attention.py
+│   ├── radix_code_walkthrough.md
+│   ├── radix_attention_notes.md
+│   ├── radix_tree_structure.png
+│   └── cache_lifecycle.png
+├── MLA/                             # DeepSeek-V2 多头潜在注意力
+│   ├── README.md
+│   ├── multi_head_latent_attention.py
+│   ├── causal_mask_padding_mask.py
+│   ├── mla_paper_notes.md
+│   ├── mla_math_proofs.md
+│   ├── mla_code_walkthrough.md
+│   ├── block_matmul.md
+│   └── mla_notes.md
+└── W8A8/                            # 对称/非对称量化 + SmoothQuant
+    ├── README.md
+    ├── quant_primitives.py
+    ├── w8a8_gemm_mock.py
+    ├── smooth_quant.py
+    ├── SmoothQuant_Paper_Notes.md
+    └── run_all_tests.py
+```
 
-在大模型推理中，我们面临一个核心矛盾：**显存墙 (Memory Wall)**。
-*   **计算受限 (Compute-bound)**：训练时，矩阵乘法很大，GPU 的算力是瓶颈。
-*   **访存受限 (Memory-bound)**：推理时，由于是逐 Token 生成，矩阵退化为向量，**GPU 从显存（HBM）搬运数据的速度**远慢于计算速度。
-*   **结论**：谁能减少显存读写次数，谁能压缩 KV Cache 的体积，谁就是推理之王。
+## 组件速览
 
----
+| 子目录 | 一句话定位 | 核心面试锚点 |
+| :--- | :--- | :--- |
+| [FlashAttention/](FlashAttention/) | 双层循环模拟分块 Online Softmax，不写 CUDA 理解 FlashAttention | "为什么 FlashAttention 能变快？—— IO 感知，减少 O(N²) 显存读写" |
+| [Stateful_KV_GQA/](Stateful_KV_GQA/) | GQA KV 头广播 + Prefill/Decode 两阶段 KV Cache | "Prefill 和 Decode 的计算特性有什么不同？—— GEMM vs GEMV" |
+| [PagedAttention/](PagedAttention/) | vLLM 核心：物理块池 + BlockTable + 碎片化 Online Softmax | "vLLM 吞吐量提升来自哪里？—— 显存近乎零浪费，Batch Size 翻倍" |
+| [RadixAttention/](RadixAttention/) | SGLang 前缀树跨请求 KV Cache 共享 + LRU 驱逐 | "RadixAttention 和 PagedAttention 什么关系？—— 上层缓存管理 vs 底层物理机制" |
+| [MLA/](MLA/) | DeepSeek-V2 低秩 KV 压缩 + 权重吸收 | "MLA 如何打破 KV 缓存僵局？—— latent cache 比 GQA 还小数十倍" |
+| [W8A8/](W8A8/) | INT8 量化原语 + 离群值灾难 + SmoothQuant 难度迁移 | "量化为什么掉精度？—— outlier 拉大 scale，正常值被抹平" |
 
-### 📂 任务详细拆解
+## 建议学习路径
 
-#### 第一站：Day 21-23 —— Online Softmax (FlashAttention 的灵魂)
-*   **任务**：不写 CUDA，但在 Python 中用 `for` 循环模拟数据的“分块（Tiling）”读取。
-*   **前置知识**：
-    *   **内存层级**：理解 HBM（大而慢）与 SRAM（小而快）的区别。
-    *   **Softmax 的痛点**：传统的 Softmax 需要完整读取 $O(N^2)$ 的得分矩阵，计算 $max$，再算 $exp$，再算 $sum$。这涉及多次显存往返。
-*   **手撕重点**：
-    *   实现 **Online Softmax 公式**：$m_{new} = \max(m_{old}, m_{block})$, $l_{new} = l_{old} \cdot e^{(m_{old}-m_{new})} + \sum e^{(x-m_{new})}$。
-    *   理解如何通过局部统计量更新全局结果，从而避免存储巨大的全量 Attention Matrix。
-*   **面试锚点**：**“FlashAttention 为什么能变快？”**（答：它不改变数学结果，但减少了 $O(N^2)$ 次显存读写）。
+| 顺序 | 目录 | 核心问题 |
+| :--- | :--- | :--- |
+| 1 | [FlashAttention/](FlashAttention/) | GPU 为什么用分块做矩阵乘法？Online Softmax 怎么用局部统计量更新全局？ |
+| 2 | [Stateful_KV_GQA/](Stateful_KV_GQA/) | KV Cache 为什么是 O(N³)→O(N²) 的关键？Prefill vs Decode 算术强度差多大？ |
+| 3 | [PagedAttention/](PagedAttention/) | 显存碎片怎么被页表消除？不连续物理块上怎么做流式 Attention？ |
+| 4 | [RadixAttention/](RadixAttention/) | 前缀树怎么跨请求复用 KV Cache？LRU 驱逐 vs LFU 为什么选 LRU？ |
+| 5 | [MLA/](MLA/) | 低秩压缩怎么把 KV Cache 压到极小？吸收矩阵怎么绕过显式恢复 K/V？ |
+| 6 | [W8A8/](W8A8/) | INT8 量化怎么算 scale/zero-point？SmoothQuant 怎么把难度从 A 迁移到 W？ |
 
-#### 第二站：Day 24-27 —— Stateful KV Cache & GQA
-*   **任务**：手写一个能“记住”历史状态的注意力层，实现 GQA 的权重广播。
-*   **前置知识**：
-    *   **自回归生成**：理解为什么第 $n$ 个 Token 推理时需要前 $n-1$ 个 Token 的 K/V。
-    *   **KV Cache 瓶颈**：MHA 的 KV Cache 增长太快。
-    *   **MQA/GQA 演进**：MQA（多头 Q，单头 KV）和 GQA（多头 Q，分组头 KV）。
-*   **手撕重点**：
-    *   **Prefill 阶段**：一次性处理 Prompt，填充 KV Cache。
-    *   **Decode 阶段**：逐步输入 1 个 Token，更新并读取 Cache。
-    *   使用 `repeat_interleave` 实现 GQA 中 KV 头到 Q 头的映射。
-*   **面试锚点**：**“Prefill 和 Decode 两个阶段的计算特性有什么不同？”**
+## 快速运行
 
-#### 第三站：Day 28-31 —— PagedAttention (vLLM 的核心)
-*   **任务**：用字典和列表模拟操作系统中的“页表”管理 KV Cache。
-*   **前置知识**：
-    *   **显存碎片**：传统的连续存储会导致大量显存浪费（Internal Fragmentation）。
-    *   **虚拟内存**：理解操作系统如何将逻辑地址映射到不连续的物理页面。
-*   **手撕重点**：
-    *   定义 `BlockTable`，将 `logical_token_index` 映射到 `physical_block_id`。
-    *   实现非连续显存的 `gather` 操作：从不连续的 block 中拼凑出计算需要的 K/V。
-*   **面试锚点**：**“vLLM 的吞吐量提升来自哪里？”**（答：显存近乎零浪费，支持更大的 Batch Size）。
+```bash
+# FlashAttention
+python FlashAttention/online_softmax.py
+python FlashAttention/flash_attention_forward.py
 
-#### 第四站：Day 32-35 —— 🔥 MLA Attention (DeepSeek 的绝技)
-*   **任务**：复现 DeepSeek-V2 的低秩压缩注意力机制。
-*   **前置知识**：
-    *   **低秩分解 (Low-rank)**：将大的矩阵分解为两个小矩阵相乘。
-    *   **KV 压缩**：将 KV Cache 压缩成一个极小的 Latent Vector ($c_t$)。
-*   **手撕重点**：
-    *   实现 **KV 吸收 (Absorb)**：在推理时将投影矩阵并入 Q 或 $W_{out}$。
-    *   计算 MLA 下 KV Cache 的理论占用量（你会发现它比 GQA 还要小得多）。
-*   **面试锚点**：**“MLA 是如何打破 KV 缓存僵局的？”**（大厂 2025/2026 必考题）。
+# Stateful KV Cache & GQA
+python Stateful_KV_GQA/grouped_query_attention.py
+python Stateful_KV_GQA/stateful_kvcache_gqa.py
 
-#### 第五站：Day 36-38 —— W8A8 量化 (Naive Quant)
-*   **任务**：实现对称与非对称量化。
-*   **前置知识**：
-    *   **动态范围**：FP16 到 INT8 的映射。
-    *   **量化偏差**：Scale（缩放）和 Zero-point（偏移）。
-*   **手撕重点**：
-    *   `x_q = clamp(round(x / scale) + zero_point)`。
-    *   **SmoothQuant 思想**：理解为什么激活（Activation）比权重（Weight）更难量化。
-*   **面试锚点**：**“量化会带来哪些精度损失？如何缓解（Calibration）？”**
+# PagedAttention
+python PagedAttention/paged_attention.py
 
----
+# RadixAttention
+python RadixAttention/radix_attention.py
 
-### 🚀 Phase 2 的执行准则：**“眼里有内存，心里有 Tiling”**
+# MLA
+python MLA/causal_mask_padding_mask.py
+python MLA/multi_head_latent_attention.py
 
-在 Phase 1，你关心的是 `output = matrix_mul(x, w)`。
-在 Phase 2，你必须开始关心：
-1.  **这个张量在显存里存了吗？**
-2.  **它是连续存储的吗？**
-3.  **计算它需要搬运多少字节？**
+# W8A8
+python W8A8/run_all_tests.py
+```
 
-### 🚩 明天的任务（Day 21）：开启 Online Softmax
-你需要先精读 **FlashAttention 论文的 Algorithm 1**。
-*   **思考题**：如果你有一个 100 万长度的序列，显存放不下那个 $1M \times 1M$ 的注意力矩阵，你怎么在只有 10KB 的缓存里算出正确的 Softmax 结果？
+## 文档约定
 
-准备好了吗？逻辑学家，让我们开始这场关于显存的极致博弈。
+每个子目录遵循统一规范：
+
+| 约定 | 说明 |
+| :--- | :--- |
+| **`README.md`** | 精简索引：目录结构 + 组件速览 + 学习路径 + 快速运行 + 交叉链接 |
+| **`{topic}.py`** | 手撕代码，自带 `if __name__ == '__main__':` 冒烟测试（含断言） |
+| **`{topic}_notes.md`** | 深度知识库：Part I 为什么 → Part II 怎么做 → Part III 工程细节 → Part IV 面试 |
+| **代码注释** | 中文注释 + 张量形状流转标注（如 `# [B, H, N, d]`） |
+
+## 前置背景
+
+Phase 2 的核心矛盾是 **显存墙 (Memory Wall)**：推理逐 Token 生成时，矩阵退化为向量，GPU 搬运数据的速度远慢于计算速度。谁能减少显存读写、压缩 KV Cache 体积，谁就是推理之王。
+
+- **Compute-bound**：训练/Prefill 时矩阵乘法大，GPU 算力是瓶颈
+- **Memory-bound**：Decode 时每次只输入 1 个 Token，GPU 90%+ 时间在等数据
+- **结论**：Phase 2 所有优化（FlashAttention / GQA / PagedAttention / MLA / W8A8）都在回答同一个问题 —— 如何少搬数据、搬快数据

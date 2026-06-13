@@ -1,8 +1,7 @@
-# 手动实现FlashAttetion-2,外层Q,O；内层K,V的循环。数值稳定性，实现快速因果掩码减少计算量
+# 手动实现 FlashAttention-2，外层 Q/O，内层 K/V 循环。
+# 数值稳定的 Online Softmax + 快速因果掩码减少计算量。
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import math
 
 def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: bool = True, block_size: int = 64) -> torch.Tensor:
@@ -125,8 +124,8 @@ def test_flash_attention():
     print(f'[*] 输出矩阵形状为: {O_flash.shape}')
     diff = (O_flash - O_std).abs().max().item()
     print(f'最大精度误差为: {diff:.4e}')
-    assert torch.allclose(O_flash,O_std,atol=1e-5),'❌ FlashAttetion实现和标准注意力实现不一致！'
-    print('✅ FlashAttetion实现和标准注意力实现一致')
+    assert torch.allclose(O_flash,O_std,atol=1e-5),'❌ FlashAttention 实现和标准注意力实现不一致！'
+    print('✅ FlashAttention 实现和标准注意力实现一致')
 
 if __name__ == '__main__':
     test_flash_attention()

@@ -144,14 +144,16 @@ def run_test():
     start = time.time()
     for _ in range(10000):
         _ = compiled_swiglu(x)
-    torch.cuda.synchronize()
-    print(f'编译版本100次耗时: {time.time() - start:.4f}s')
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    print(f'编译版本 10000 次耗时: {time.time() - start:.4f}s')
 
     start = time.time()
     for _ in range(10000):
         _ = swiglu_ffn(x)
-    torch.cuda.synchronize()
-    print(f'原始版本100次耗时: {time.time() - start:.4f}s')
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    print(f'原始版本 10000 次耗时: {time.time() - start:.4f}s')
     
     print('\n 恭喜！所有测试均通过！')
 

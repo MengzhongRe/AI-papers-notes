@@ -3,16 +3,20 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import sys
 import time
 from pathlib import Path
+import sys
 
-# 导入SwiGLUFFN
-# resolve()函数获取当前.py执行文件的绝对路径
-cur_dir = Path(__file__).resolve()
-parent_dir = cur_dir.parent.parent
-sys.path.append(str(parent_dir))
-from FFN.swiglu_ffn import SwiGLUFFN
+from moe_utils import compute_aux_loss
+
+# 导入SwiGLUFFN (仅在必要时修改sys.path)
+try:
+    from FFN.swiglu_ffn import SwiGLUFFN
+except ImportError:
+    cur_dir = Path(__file__).resolve()
+    parent_dir = cur_dir.parent.parent
+    sys.path.append(str(parent_dir))
+    from FFN.swiglu_ffn import SwiGLUFFN
 
 # ========================================================
 # 模块一:实现向量化MoE(8 * 7B)类
@@ -53,17 +57,8 @@ class VectorizedMoELayer(nn.Module):
         weights,indices = torch.topk(logits,self.topk,dim=-1)
         weights = F.softmax(weights,dim=-1).type_as(x)
 
-        # 3.计算aux_loss负载均衡损失
-        # 计算全局路由概率P 
-        prob = F.softmax(logits,dim=-1) # [num_tokens,num_experts]
-        P = prob.mean(dim=0).type_as(x)  # [num_experts]
-        # 计算每个专家被选中为top-k频率
-        mask = torch.zeros_like(logits)
-        # scatter_函数在mask的dim=1,在indices位置填1.0，即被选中的专家填1.0
-        mask.scatter_(1,indices,1.0)
-        f = mask.mean(dim=0).type_as(x)
-
-        aux_loss = len(self.experts) * torch.sum(f * P)
+        # 3. 计算 aux_loss 负载均衡损失
+        aux_loss = compute_aux_loss(logits, indices, len(self.experts))
 
         # 准备输出画布
         final_out = torch.zeros_like(x_flat)
@@ -185,21 +180,25 @@ def test_run():
         
     # 1.测试Naive推理耗时
     with torch.no_grad():
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         start = time.time()
         for _ in range(test_time):
             _ = naive_moe_layer(x)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         end = time.time()
         avg_time = (end - start) / test_time
         print(f'Naive 版本{test_time}次推理总耗时为：{end - start:.2f} s, 平均耗时为: {avg_time * 1e3:.4f} ms')
-    
+
     with torch.no_grad():
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         start = time.time()
         for _ in range(test_time):
             _ = moe_layer(x)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         end = time.time()
         avg_time = (end - start) / test_time
         print(f'向量化 版本{test_time}次推理总耗时为：{end - start:.2f} s, 平均耗时为: {avg_time * 1e3:.4f} ms')

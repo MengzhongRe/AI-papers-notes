@@ -17,7 +17,7 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout_p)
     
     def forward(self,q,k,v,mask=None):
-        #q,k,v: [Btach_size,Seq_len,d_model]
+        # q,k,v: [Batch_size, Seq_len, d_model]
         # 先根据输入获取批量大小
         batch_size = q.size(0)
         # 先把q输入W_q得到Q:[batch_size,seq_len,d_model] -> [batch_size,seq_len,d_model]
@@ -33,7 +33,7 @@ class MultiHeadAttention(nn.Module):
         scores = torch.matmul(Q,K.transpose(-2,-1)) / math.sqrt(self.head_dim)
         # 实现掩蔽注意力:把mask 为0的token赋值为负无穷大，使得其经过softmax之后概率为0
         if mask is not None:
-            scores = scores.masked_fill(mask==0,-1e9)
+            scores = scores.masked_fill(mask==0, float('-inf'))
         # 将scores送入softmax得到注意力权重
         # attention_weights:[B,num_heads,L,L]
         attention_weights = torch.softmax(scores,dim=-1)

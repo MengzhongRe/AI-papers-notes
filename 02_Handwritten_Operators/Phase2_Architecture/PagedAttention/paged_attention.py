@@ -2,8 +2,6 @@
 import torch
 import math
 
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-
 # =====================================================
 # 模块一: GPU上的全局物理显存池
 # =====================================================
@@ -12,8 +10,10 @@ class PhysicalKVMemoryPool():
     模拟GPU上的全局KV cache显存池
     在实际的vLLM引擎中这是预先分配好的巨大的连续的显存
     """
-    def __init__(self, num_blocks: int, block_size: int, 
-                num_kv_heads: int, head_dim: int, device: str = DEVICE):
+    def __init__(self, num_blocks: int, block_size: int,
+                num_kv_heads: int, head_dim: int, device: str = None):
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.block_size = block_size
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
@@ -44,15 +44,16 @@ class PagedAttention():
         """
         num_heads = q.size(0)
         block_size = kv_pool.block_size
+        device = q.device
 
         # ============================================
         # 初始化Online Softmax的全局变量
         # 这里由于query长度为1,因此m,l,o的长度也是1
         # m_global 初始化为全负无穷
-        m_global = torch.full((num_heads,1),float('-inf'),device=DEVICE)
+        m_global = torch.full((num_heads,1),float('-inf'),device=device)
         # l_global 初始化为全0
-        l_global = torch.zeros((num_heads,1),device=DEVICE)
-        out_global = torch.zeros((num_heads,self.head_dim),device=DEVICE)
+        l_global = torch.zeros((num_heads,1),device=device)
+        out_global = torch.zeros((num_heads,self.head_dim),device=device)
         q_unsqueezed = q.unsqueeze(1)   # [num_heads,1,head_dim]
 
         # 遍历该请求页表中的每一个物理块
@@ -88,11 +89,11 @@ class PagedAttention():
             m_new = torch.maximum(m_global,m_local) # [num_heads,1]
             # 计算指数衰减系数
             alpha = torch.exp(m_global - m_new) # [num_heads,1]
-            p_tilde = torch.exp(scores - m_new) # [num_hedas,block_size]
+            p_tilde = torch.exp(scores - m_new) # [num_heads,block_size]
             # 计算当前块的指数和
             l_local = torch.sum(p_tilde,dim=-1,keepdim=True) # [num_heads,1]
             # [num_heads,1,block_size] @ [num_heads,block_size,head_dim]
-            out_local = torch.matmul(p_tilde.unsqueeze(1),v_block).squeeze(1)  #[num_hedas,head_dim]
+            out_local = torch.matmul(p_tilde.unsqueeze(1),v_block).squeeze(1)  # [num_heads,head_dim]
             # 更新out_global: 对以前的out乘alpha归一化
             out_global = out_global * alpha + out_local
             # 更新全局指数和
@@ -109,12 +110,13 @@ class PagedAttention():
 # =============================================
 def test_paged_attention():
     # 1.设置全局变量
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     NUM_BLOCKS = 8
     BLOCK_SIZE = 4
     NUM_HEADS = 32
     HEAD_DIM = 128
     # 初始化物理kv缓冲池
-    kv_pool = PhysicalKVMemoryPool(NUM_BLOCKS,BLOCK_SIZE,NUM_HEADS,HEAD_DIM)
+    kv_pool = PhysicalKVMemoryPool(NUM_BLOCKS,BLOCK_SIZE,NUM_HEADS,HEAD_DIM,device=DEVICE)
     # 在物理块7,1,3构造kv cache
     kv_pool.k_pool[7] = torch.randn((NUM_HEADS,BLOCK_SIZE,HEAD_DIM))
     kv_pool.v_pool[7] = torch.randn((NUM_HEADS,BLOCK_SIZE,HEAD_DIM))

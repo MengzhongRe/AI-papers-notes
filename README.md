@@ -15,7 +15,7 @@ Welcome to my personal engineering workshop. This repository documents my hardco
 
 **[Update 2026]** After months of rigorous literature review (now archived in `01_Paper_Notes`), this repository has officially transitioned into the **"Hardcore Engineering Phase"**. 
 
-My ultimate goal as a Logician is to build a **Neuro-Symbolic Reasoning Engine**. To achieve this, I am spending **70 days** writing core LLM operators from scratch (Test-Driven Development), focusing on:
+My ultimate goal as a Logician is to build a **Neuro-Symbolic Reasoning Engine**. To achieve this, I am spending **78 days** writing core LLM operators from scratch (Test-Driven Development), focusing on:
 - 🚀 **Memory-Bound Limits & Zero-Copy Architecture** (vLLM, PagedAttention)
 - 🧮 **Distributed System Scaling** (Megatron-LM TP, ZeRO, Ring Attention)
 - 🧠 **Reinforcement Learning for Reasoning** (DeepSeek-R1 GRPO, MCTS)
@@ -34,7 +34,7 @@ This repository strictly follows the **"3D Documentation Organization"** tailore
  ┃ ┣ 📂 Phase0_Tokenization/      # BPE Tokenizer
  ┃ ┣ 📂 Phase1_Backbone/          # Foundation (RoPE, SwiGLU, RMSNorm, MoE...)
  ┃ ┣ 📂 Phase2_Inference/         # Memory & Speed (GQA, MLA, PagedAttention, W8A8...)
- ┃ ┣ 📂 Phase3_Decoding/          # Search & Sampling (Speculative Decoding, MCTS...)
+ ┃ ┣ 📂 Phase3_Decoding/          # Decoding Strategies (Sampler, Beam Search, Contrastive Decoding, Speculative Decoding)
  ┃ ┣ 📂 Phase4_Alignment/         # RL & Finetuning (LoRA, DPO, GRPO...)
  ┃ ┗ 📂 Phase5_System_Scale/      # Distributed Math (TP, ZeRO, Ring Attention)
  ┣ 📂 03_Nano_Logic_Engine/       # [🚧 WIP] A custom LLM trained with Rule-based GRPO
@@ -68,8 +68,7 @@ This repository strictly follows the **"3D Documentation Organization"** tailore
 | **Day 14-16** | **🔥 SwiGLU FFN**<br>[`swiglu_ffn.py`]() | **GLU Variants**<br>🔗 [PDF](https://arxiv.org/pdf/2002.05202.pdf) | 1. 手撕“先升维(Gate/Up)再降维(Down)”知识存储机制。<br>2. **[官方对齐]** 还原 LLaMA 的 $W_1, W_3$ 权重合并乘法，对比 `torch.compile` 加速比。 |
 | **Day 17-19** | **🔥 MoE & Router**<br>[`moe_layer.py`]() | **Mixtral 8x7B**<br>🔗[PDF](https://arxiv.org/pdf/2401.04088.pdf) | 1. 将 SwiGLU 实例化为 8 个 Experts，编写 Top-2 Router。<br>2. **[算子核心]** 手写 `scatter` 与 `gather` 路由分发逻辑。<br>3. 编写 **Load Balancing Loss**，测试极端系数 (0.01 vs 100) 下的梯度崩塌。 |
 | **Day 20-21** | **CE Loss & Head**<br>[`loss_head.py`]() | **GPT-3** | 用 `LogSumExp` 技巧手撕稳健的 CrossEntropyLoss。 |
-| **Day 22** | **Decoding Loop**<br>[`generate_loop.py`]() | *General Generation* | 1. 手写自回归生成循环。<br>2. 实现 Temperature Scaling、贪婪解码逻辑。 |
-| **Day 23** | **Inverted Dropout**<br>[`inverted_dropout.py`]() | *Legacy Concept* | *注：现代 LLM 预训练已极少使用 Dropout，保留此算子仅为强化底层张量与正则化直觉。* |
+| **Day 22-23** | **Decoding Loop & Block**<br>[`generate_loop.py`]()<br>[`transformer_block.py`]() | *General Generation* | 1. 手写自回归生成循环 + Temperature Scaling + 贪婪解码。<br>2. **[关键拼装]** 用 RMSNorm + RoPE + MHA + SwiGLU 拼出一个最小 Decoder Block（随机初始化权重），跑通完整前向。为 Phase 3 所有解码策略提供真实推理载体。 |
 
 ---
 
@@ -87,14 +86,15 @@ This repository strictly follows the **"3D Documentation Organization"** tailore
 
 ---
 
-### 🎲 Phase 3: 解码、推测与树搜索 (Decoding & Speculative Execution)
-*目标：掌握大厂最省机器算力、提升逻辑推演能力的解码黑科技。*
+### 🎲 Phase 3: 解码策略 (Decoding Strategies)
+*目标：掌握 token 级解码全家桶——从随机采样到推测执行，理解概率坍缩与加速比之间的博弈。*
 
 | 天数 | 核心主题与手撕代码 | 核心论文 / 直达链接 | 考核点与测试提示 (Sanity Check) |
 | :--- | :--- | :--- | :--- |
 | **Day 43-45** | **Top-P / Top-K**<br>[`sampler.py`]() | **Neural Text Degen.**<br>🔗[PDF](https://arxiv.org/pdf/1904.09751.pdf) | 给定 Logits，手写长尾词截断（`topk`）与核采样（先 `sort` 再 `cumsum` 做 Mask），最后 `torch.multinomial` 采样。 |
-| **Day 46-49** | **Beam Search & MCTS**<br>[`beam_mcts.py`]() | **Tree of Thoughts**<br>🔗 [PDF](https://arxiv.org/pdf/2305.10601.pdf) | 1. 维护大小为 $B$ 的堆进行束搜索。<br>2. **[o1前置]** 基于 UCB (Upper Confidence Bound) 写一个启发式节点选择器。 |
-| **Day 50-53** | **🔥 Speculative Dec.**<br>[`speculative.py`]() | **Speculative Decoding**<br>🔗[PDF](https://arxiv.org/pdf/2211.17192.pdf) | 初始化 Draft 和 Target 模型。实现 Draft 生成 $K$ 个 token，Target 一次前向后进行 **Accept/Reject 并行拒绝采样** 的概率纠正。 |
+| **Day 46-47** | **Beam Search**<br>[`beam_search.py`]() | — | 1. 最小堆维护 $B$ 条候选路径，每步展开 $B \\times V$ 空间取 Top-$B$。<br>2. **长度惩罚** `score / length^alpha`（默认 $\\alpha=0.6$），防止短序列霸榜。<br>3. EOS 早停：部分 beam 终止后动态缩减 beam width。<br>4. **[Phase 2 联动]** 基于 Day 27-29 的 KV Cache，为 $B$ 条 beam 各自维护独立 Cache，展开后按存活路径裁剪。<br>5. 与 HF `model.generate(num_beams=B, do_sample=False)` 对齐。 |
+| **Day 48** | **Contrastive Decoding**<br>[`contrastive_decoding.py`]() | **Contrastive Decoding**<br>🔗 [PDF](https://arxiv.org/pdf/2309.09117.pdf) | 1. 用 small model (amateur) 的 logits 减去 large model (expert) 的 logits，放大差异信号，消除重复退化。<br>2. 引入惩罚系数 $\\alpha$ 控制对比强度：`logits = logits_expert - α * logits_amateur`。<br>3. 过滤 amateur 中高概率但 expert 中低概率的 token（虚假信号）。<br>4. 对比纯采样 vs 对比解码的生成多样性。 |
+| **Day 49-52** | **🔥 Speculative Dec.**<br>[`speculative.py`]() | **Speculative Decoding**<br>🔗[PDF](https://arxiv.org/pdf/2211.17192.pdf) | 1. **[Mock Model 方案]** 用 Day 22-23 的 Decoder Block 作 Target，同架构 1/4 宽度作 Draft。<br>2. Draft 自回归生成 $K$ 个候选 token。<br>3. Target 一次前向并行验证 $K$ 个 token，逐位 Accept/Reject 拒绝采样。<br>4. **正确性判据**：验证接受分布与 Target 自回归分布严格一致（拒绝采样的数学保证）。<br>5. 测量 Wall-Clock 加速比和平均接受长度。 |
 
 ---
 
@@ -103,9 +103,10 @@ This repository strictly follows the **"3D Documentation Organization"** tailore
 
 | 天数 | 核心主题与手撕代码 | 核心论文 / 直达链接 | 考核点与测试提示 (Sanity Check) |
 | :--- | :--- | :--- | :--- |
-| **Day 54-55** | **LoRA Core Forward**<br>[`lora_linear.py`]() | **LoRA**<br>🔗[PDF](https://arxiv.org/pdf/2106.09685.pdf) | 初始化 $A$ (Normal) 与 $B$ (Zero)，实现 `scaling = alpha / r` 的前向逻辑，并手写推理期的 `merge_weights` 权重融合。 |
-| **Day 56-58** | **DPO Loss**<br>[`dpo_loss.py`]() | **DPO**<br>🔗[PDF](https://arxiv.org/pdf/2305.18290.pdf) | 输入 4 个 Logps（赢/输 x 策略/参考模型），写出基于 $\beta$ 放缩的对数 Sigmoid 隐式偏好损失。 |
-| **Day 59-61** | **🔥 GRPO Loss**<br>[`grpo_loss.py`]() | **DeepSeekMath / R1**<br>🔗 [PDF](https://arxiv.org/pdf/2501.12948.pdf) | **RL 推理核心！** 摒弃 Critic 网络：对同 Prompt 采样 $N$ 个回答，基于 Rule-based 计算 Reward 的组内均值和标准差，归一化得到 Advantage (优势函数)。 |
+| **Day 53-54** | **LoRA Core Forward**<br>[`lora_linear.py`]() | **LoRA**<br>🔗[PDF](https://arxiv.org/pdf/2106.09685.pdf) | 初始化 $A$ (Normal) 与 $B$ (Zero)，实现 `scaling = alpha / r` 的前向逻辑，并手写推理期的 `merge_weights` 权重融合。 |
+| **Day 55-57** | **DPO Loss**<br>[`dpo_loss.py`]() | **DPO**<br>🔗[PDF](https://arxiv.org/pdf/2305.18290.pdf) | 输入 4 个 Logps（赢/输 x 策略/参考模型），写出基于 $\beta$ 放缩的对数 Sigmoid 隐式偏好损失。 |
+| **Day 58** | **Best-of-N + Verifier**<br>[`best_of_n.py`]() | — | **Phase 3 → Phase 4 推理时桥接：** 1. 用 Phase 3 采样器生成 $N$ 个候选答案。<br>2. 写一个简单的规则/启发式 Verifier 打分。<br>3. 选出最高分作为最终输出。<br>4. 对比 Best-of-N vs 纯采样的准确率提升曲线。 |
+| **Day 59-60** | **🔥 GRPO Loss**<br>[`grpo_loss.py`]() | **DeepSeekMath / R1**<br>🔗 [PDF](https://arxiv.org/pdf/2501.12948.pdf) | **RL 推理核心！** 摒弃 Critic 网络：对同 Prompt 采样 $N$ 个回答，基于 Rule-based 计算 Reward 的组内均值和标准差，归一化得到 Advantage (优势函数)。 |
 
 ---
 
@@ -114,20 +115,21 @@ This repository strictly follows the **"3D Documentation Organization"** tailore
 
 | 天数 | 核心主题与推演任务 | 核心论文 / 直达链接 | 考核点与测试提示 (Sanity Check) |
 | :--- | :--- | :--- | :--- |
-| **Day 62-63** | **Back-of-the-Envelope**<br>[`system_math.ipynb`]() | **Scaling Laws** 🔗[PDF](https://arxiv.org/pdf/2001.08361.pdf)<br>**Transformer Math** 🔗[Blog](https://blog.eleuther.ai/transformer-math/) | **纸笔推演大厂神题**：手推 7B 模型在 Adam+BF16 训练下的精确显存占用量；推导 Transformer 训练期 $6ND$ 的 FLOPs 计算量公式。 |
-| **Day 64-65** | **Tensor Parallelism**<br>[`tp_linear_mock.py`]() | **Megatron-LM**<br>🔗 [PDF](https://arxiv.org/pdf/1909.08053.pdf) | 写出 `ColumnParallel` 和 `RowParallel` 的前向切分逻辑，并在正确的位置插入 `All-Reduce` 占位符以模拟通信缝合。 |
-| **Day 66-67** | **ZeRO Memory Mock**<br>[`zero_states.py`]() | **ZeRO (DeepSpeed)**<br>🔗 [PDF](https://arxiv.org/pdf/1910.02054.pdf) | 用 Python 字典模拟 $N$ 张卡的显存切片。编写逻辑，验证在 ZeRO-1/2/3 阶段下单卡的绝对占用，模拟 All-Gather 重组。 |
-| **Day 68-70** | **🔥 Ring Attention**<br>[`ring_attention.py`]() | **Ring Attention**<br>🔗 [PDF](https://arxiv.org/pdf/2310.01889.pdf) | **长文本推理绝杀！** 模拟 4 卡通信：Q 驻留本地，K/V 切块在多卡间以环形 (Ring) 传递，在 Python 中用 `yield` 模拟计算与通信重叠。 |
+| **Day 61-62** | **Back-of-the-Envelope**<br>[`system_math.ipynb`]() | **Scaling Laws** 🔗[PDF](https://arxiv.org/pdf/2001.08361.pdf)<br>**Transformer Math** 🔗[Blog](https://blog.eleuther.ai/transformer-math/) | **纸笔推演大厂神题**：手推 7B 模型在 Adam+BF16 训练下的精确显存占用量；推导 Transformer 训练期 $6ND$ 的 FLOPs 计算量公式。 |
+| **Day 63-64** | **Tensor Parallelism**<br>[`tp_linear_mock.py`]() | **Megatron-LM**<br>🔗 [PDF](https://arxiv.org/pdf/1909.08053.pdf) | 写出 `ColumnParallel` 和 `RowParallel` 的前向切分逻辑，并在正确的位置插入 `All-Reduce` 占位符以模拟通信缝合。 |
+| **Day 65-66** | **ZeRO Memory Mock**<br>[`zero_states.py`]() | **ZeRO (DeepSpeed)**<br>🔗 [PDF](https://arxiv.org/pdf/1910.02054.pdf) | 用 Python 字典模拟 $N$ 张卡的显存切片。编写逻辑，验证在 ZeRO-1/2/3 阶段下单卡的绝对占用，模拟 All-Gather 重组。 |
+| **Day 67-69** | **🔥 Ring Attention**<br>[`ring_attention.py`]() | **Ring Attention**<br>🔗 [PDF](https://arxiv.org/pdf/2310.01889.pdf) | **长文本推理绝杀！** 模拟 4 卡通信：Q 驻留本地，K/V 切块在多卡间以环形 (Ring) 传递，在 Python 中用 `yield` 模拟计算与通信重叠。 |
 
 
-### Phase 6: 终极交付 —— "Neuro-Symbolic Reasoning" 引擎
-*目标：拼装前 70 天的算子，结合逻辑学背景，打造极具辨识度的 RL-for-Reasoning 闭环 Demo。*
+### Phase 6: 终极交付 —— "Neuro-Symbolic Reasoning" 引擎 (Day 70-78)
+*目标：拼装全部算子，用 MCTS (推理时搜索) + GRPO (训练时对齐) 形成完整的推理闭环 Demo。*
 
 | 天数 | 核心动作 (Action) | 交付物模块 | 面试讲解锚点与验收标准 (Deliverable) |
 | :--- | :--- | :--- | :--- |
-| **Day 61-62** | **模型拼装与 Pretrain** | `nano_logic_model.py` | 用手写的 RoPE/RMSNorm/MoE/MLA 拼装一个 **50M 的微型大模型**，跑通极简 Training Loop。 |
-| **Day 63** | **合成逻辑数据集** | `logic_data_gen.py` | **发挥 Logic 硕士护城河：** 编写脚本自动生成形式逻辑推演题（三段论/肯定前件式等），强制插入 `<think>` 模板。 |
-| **Day 64-65** | **Rule-based GRPO** | `train_grpo_logic.py` | 1. 写一个 **Python 逻辑解析器** 作为确定性 Reward：推演符合严格逻辑规则 +1.0，格式错 -1.0。<br>2. 运行 GRPO 训练，展示微型模型如何通过纯 RL 涌现出 "Aha Moment" 和自我纠错能力。 |
+| **Day 70-71** | **模型拼装与 Pretrain** | `nano_logic_model.py` | 用手写的 RMSNorm / RoPE / MHA / SwiGLU / MoE / MLA 拼装一个 **50M 的微型大模型**，跑通极简 Training Loop。 |
+| **Day 72** | **合成逻辑数据集** | `logic_data_gen.py` | **发挥 Logic 硕士护城河：** 编写脚本自动生成形式逻辑推演题（三段论/肯定前件式等），强制插入 `<think>` 模板。 |
+| **Day 73-75** | **🔥 MCTS 推理搜索** | `mcts_reasoning.py` | **从 Phase 3 移入，升级为 thought 级：**<br>1. UCB 节点选择器 `UCB = V̄ + c·√(ln N_parent / N_node)`。<br>2. 定义可替换的 Value Evaluator 接口：`OracleEvaluator`（用于 TDD，基于规则判断逻辑题正误）与 `LLMEvaluator`（调用 50M 模型打分）。<br>3. 实现 Selection → Expansion → Simulation → Backpropagation 完整四步。<br>4. 在 24 点游戏 / 逻辑推演题上与 ToT 论文结果对比。<br>5. 对比 Beam Search vs MCTS 在同问题上的搜索效率与准确率。 |
+| **Day 76-78** | **Rule-based GRPO 训练** | `train_grpo_logic.py` | 1. 写一个 **Python 逻辑解析器** 作为确定性 Reward：推演符合严格逻辑规则 +1.0，格式错 -1.0。<br>2. GRPO 训练闭环：展示微型模型通过纯 RL 涌现 "Aha Moment" 和自我纠错。<br>3. **最终 Demo**：MCTS（推理时搜索）+ GRPO（训练时对齐）= 完整 Neuro-Symbolic 闭环。 |
 
 ---
 
