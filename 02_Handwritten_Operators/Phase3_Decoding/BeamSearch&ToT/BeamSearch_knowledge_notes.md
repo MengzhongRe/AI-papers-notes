@@ -1,10 +1,24 @@
 # Beam Search 系统性知识笔记
 
-> **Day 46-47 理论学习前置材料** — 本文档聚焦 beam search 的理论基础、数学原理与算法直觉，不涉及具体代码实现。工程实现细节将在 `beam_search.py` 中以注释形式呈现。
+> 关联文档：[README.md](README.md) · [beam_search_engineering.md](beam_search_engineering.md)
+> 关联代码：[beam_search.py](beam_search.py)
+
+## 目录
+
+- [Part I：问题背景与动机](#part-i问题背景与动机)
+- [Part II：核心算法](#part-ii核心算法)
+- [Part III：评分函数与长度归一化](#part-iii评分函数与长度归一化)
+- [Part IV：EOS 处理与 Beam 动态管理](#part-iv-eos-处理与-beam-动态管理)
+- [Part V：与其他解码策略的对比](#part-v与其他解码策略的对比)
+- [Part VI：高级变体](#part-vi高级变体)
+- [Part VII：理论性质与局限性](#part-vii理论性质与局限性)
+- [Part VIII：关键公式速查](#part-viii关键公式速查)
+- [附录 A：关键论文索引](#附录-a关键论文索引)
+- [附录 B：术语对照表](#附录-b术语对照表)
 
 ---
 
-## 第 1 章：问题背景与动机
+## Part I：问题背景与动机
 
 ### 1.1 自回归解码的形式化定义
 
@@ -55,7 +69,7 @@ $$
 
 ---
 
-## 第 2 章：Beam Search 的核心算法
+## Part II：核心算法
 
 ### 2.1 基本思想与直觉
 
@@ -102,7 +116,7 @@ for t = 1 to T_max:
 **关键权衡**：
 - **计算成本**：每步需评估 $B$ 个前缀 → 相当于 batch size $B$ 的前向传播
 - **KV Cache 膨胀**：每条 beam 需独立维护 KV Cache，内存随 $B$ 线性增长
-- **收益递减**：$B$ 从 1 增至 5 收益巨大；$B$ 从 10 增至 20 收益甚微；$B > 50$ 在某些任务中反而降低质量（见第 7 章）
+- **收益递减**：$B$ 从 1 增至 5 收益巨大；$B$ 从 10 增至 20 收益甚微；$B > 50$ 在某些任务中反而降低质量（见 Part VII）
 
 ### 2.4 搜索树的可视化理解
 
@@ -150,7 +164,7 @@ $$
 
 ---
 
-## 第 3 章：评分函数与长度归一化
+## Part III：评分函数与长度归一化
 
 ### 3.1 原始评分：对数概率连乘
 
@@ -220,7 +234,7 @@ $$
 
 其中 $p_{i,j}$ 是第 $j$ 个目标 token 对第 $i$ 个源 token 的注意力概率。
 
-**在现代 LLM 中的定位**：coverage penalty 是 encoder-decoder 架构的产物。现代 decoder-only LLM（GPT 系列）没有显式的 source-target attention，因此 coverage penalty **不直接适用**。其精神后代是 repetition penalty 和 n-gram blocking（见第 7.3 节）。
+**在现代 LLM 中的定位**：coverage penalty 是 encoder-decoder 架构的产物。现代 decoder-only LLM（GPT 系列）没有显式的 source-target attention，因此 coverage penalty **不直接适用**。其精神后代是 repetition penalty 和 n-gram blocking（见 Part VII §7.3）。
 
 ### 3.6 一个尖锐问题：长度归一化真的解决了 EOS 早停偏差吗？
 
@@ -360,7 +374,7 @@ $$
 
 ---
 
-## 第 4 章：EOS 早停与 Beam 动态管理
+## Part IV：EOS 处理与 Beam 动态管理
 
 ### 4.1 EOS Token 的语义
 
@@ -420,7 +434,7 @@ Step 7: 硬截断，beam[0]、beam[1]、beam[2] 全部未 EOS
 
 ---
 
-## 第 5 章：Beam Search 与其他解码策略的对比
+## Part V：与其他解码策略的对比
 
 ### 5.1 解码策略的分类法
 
@@ -561,7 +575,7 @@ Beam Search B=2 典型输出:
 
 ---
 
-## 第 6 章：Beam Search 的高级变体
+## Part VI：高级变体
 
 ### 6.1 Diverse Beam Search (AAAI 2018)
 
@@ -618,7 +632,7 @@ Constrained Beam Search 是现代 LLM 推理引擎（vLLM、SGLang、llama.cpp�
 
 ---
 
-## 第 7 章：理论性质与局限性
+## Part VII：理论性质与局限性
 
 ### 7.1 Beam Search 的近似比分析
 
@@ -702,7 +716,7 @@ MCTS 是另一种树搜索方法，在 AlphaGo 中成名，近年被用于 LLM �
 
 ---
 
-## 第 8 章：关键公式速查
+## Part VIII：关键公式速查
 
 ### Beam Search 评分（原始）
 $$
@@ -764,4 +778,4 @@ $$
 
 ---
 
-> **下一步**：基于本笔记的理论基础，阅读 [`beam_search.py`]() 的手撕实现。工程细节（最小堆调度、KV Cache 独立管理与裁剪、与 HF `model.generate()` 对齐）将在代码中以中文注释形式展开。
+> **下一步**：基于本笔记的理论基础，阅读 [`beam_search.py`](beam_search.py) 的手撕实现。工程细节（最小堆调度、KV Cache 独立管理与裁剪、与 HF `model.generate()` 对齐）将在代码中以中文注释形式展开。

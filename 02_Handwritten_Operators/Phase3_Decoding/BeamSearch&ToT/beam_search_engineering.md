@@ -4,6 +4,20 @@
 > 关联代码：[beam_search.py](beam_search.py)
 > 相关子目录：[Top-P_Decoding/](../Top-P_Decoding/)
 
+## 目录
+
+- [一、整体架构与 API 设计](#一整体架构与-api-设计)
+- [二、Beam 初始化的 Bootstrapping 技巧](#二beam-初始化的-bootstrapping-技巧)
+- [三、并行前向与已终止 beam](#三并行前向与已终止-beam)
+- [四、Top-K 词汇剪枝](#四top-k-词汇剪枝)
+- [五、候选展开与中间剪枝](#五候选展开与中间剪枝)
+- [六、EOS "退役 + 回收"机制](#六eos-退役--回收机制)
+- [七、最终选取与长度归一化](#七最终选取与长度归一化)
+- [八、形状流转速查表](#八形状流转速查表)
+- [九、测试架构](#九测试架构)
+- [十、局限性与扩展方向](#十局限性与扩展方向)
+- [十一、常见编码陷阱](#十一常见编码陷阱)
+
 ---
 
 ## 一、整体架构与 API 设计
@@ -11,9 +25,26 @@
 ### 1.1 函数签名
 
 ```python
+# 当前实现（无类型注解）
 def beam_search(logits_fn, input_ids, num_beams=4, max_new_tokens=128,
                 eos_token_id=None, length_penalty_alpha=0.6, top_k=None):
 ```
+
+如果加上类型注解，签名如下（可在现有代码上增量添加）：
+
+```python
+from typing import Callable
+
+def beam_search(logits_fn: Callable[[torch.Tensor], torch.Tensor], input_ids: torch.Tensor,
+                num_beams: int = 4, max_new_tokens: int = 128,
+                eos_token_id: int | None = None,
+                length_penalty_alpha: float = 0.6, top_k: int | None = None):
+```
+
+类型注解要点：
+
+- **`logits_fn` 用 `Callable[[Tensor], Tensor]`**，而非 `Function`。Python 的 `typing` 中没有 `function` 这个类型——解释器不认识。`Callable[[输入类型], 返回类型]` 是标准写法。
+- **`int | None` 需要 Python 3.10+**（PEP 604 联合类型语法）。如果项目需兼容 3.9，应改用 `Optional[int]`（从 `typing` 导入）。两者语义等价，`|` 写法更简洁。
 
 参数与 HF `model.generate(num_beams=B, do_sample=False)` 的对应：
 
@@ -64,6 +95,8 @@ beam_seqs = input_ids.repeat(B, 1)                         # [B, prompt_len]
 beam_scores = torch.full((B,), -float('inf'), device=device)
 beam_scores[0] = 0.0
 ```
+
+**`torch.full` 为什么必须传 `(B,)` 而非裸 `B`**：`torch.zeros(*size, ...)` 的第一个参数是展开的整数（variadic），`torch.zeros(3, 4)` 等价于 `torch.zeros((3, 4))`。但 `torch.full` 的第二个位置参数是填充值，shape 如果不打包成元组，解释器分不清哪个数字是 size、哪个是 fill_value——`torch.full(4, -inf)` 中 4 被当成 size 的 int，但它不是 tuple 所以报错。因此必须写 `torch.full((B,), fill_value)`。
 
 同一个 prompt 复制 B 份，但只给第一条有效分数 0，其余 `-inf`。
 
@@ -254,6 +287,8 @@ for b in range(B):
         all_raw.append(beam_scores[b].item())
 ```
 
+`list()` 是**浅拷贝**——创建一个新的 list 对象，后续 `.append()` 不污染原始 `finished_seqs` / `finished_scores` 变量。虽然在本函数中这是 `finished_*` 的最后一次使用，污染也不会有 bug，但这是一种防御性编码习惯：只要你计划往池里追加东西，先拷贝一份出去，不动原始数据。如果未来有人在循环后引用 `finished_seqs`（比如加日志或扩展逻辑），用引用直接追加就会踩坑。
+
 注意 `if not done_flags[b]`——已退役的 beam 不会重复计入（它们的 `done_flags` 在活跃池里仍为 True，但内容已经在 `finished_seqs` 中了）。
 
 ### 7.2 GNMT 归一化
@@ -316,6 +351,22 @@ best_idx = max(range(len(normed)), key=lambda i: normed[i])
 
 为什么不需要真实模型：beam search 是**搜索算法**，它只消费 logits 分布，不关心模型内部参数。只要玩具模型能产生"高分陷阱"和"低分暗门"两类典型模式，就能充分验证搜索逻辑。
 
+### 9.1 设备选择与 MPS 后端
+
+测试代码中的设备选择一行：
+
+```python
+device = 'cuda' if torch.cuda.is_available() \
+        else 'mps' if torch.backends.mps.is_available() \
+        else 'cpu'
+```
+
+**MPS（Metal Performance Shaders）** 是 Apple 的 GPU 加速后端。Metal 是 Apple 的底层图形/计算 API（类似 Vulkan/CUDA），MPS 是建立在 Metal 之上的高性能计算库（类似 cuDNN/cuBLAS），PyTorch 通过 `torch.backends.mps` 接入。它在 **Apple Silicon（M1/M2/M3/M4）** 上可用，让 Mac 用户在片上 GPU 跑训练和推理。
+
+关键架构差异：M 系列芯片采用**统一内存架构（UMA）**——CPU 和 GPU 共享同一块物理 LPDDR 内存，地址空间统一，没有 NVIDIA 独显那种 `cudaMemcpy` 在 CPU↔GPU 之间搬运数据的开销。对 PyTorch 用户来说，`mps` 张量和 CPU 张量共享内存，指针透明。
+
+优先级语义：`CUDA（NVIDIA）→ MPS（Apple）→ CPU（兜底）`，从左到右第一个可用者胜出。
+
 ---
 
 ## 十、局限性与扩展方向
@@ -335,3 +386,25 @@ best_idx = max(range(len(normed)), key=lambda i: normed[i])
 ### 返回 Top-B 条序列
 
 当前只返回最优 1 条。如需返回 Top-B 条，将函数末尾改为 `return sorted(all_seqs, key=..., reverse=True)[:B]` 即可。HF `model.generate(num_return_sequences=B)` 就做这个——但注意它返回的是最终 beam，不是采样多样性（见 knowledge_notes §5.6 关于 Gemini 多候选的讨论）。
+
+## 十一、常见编码陷阱
+
+### 11.1 链式赋值吞噬注释
+
+```python
+# ❌ 错误：= 被 Python 解析为链式赋值，[B,V] 是 list
+next_logits = logits[:, -1, :] = [B,V]
+
+# ✅ 正确：# 才是注释
+next_logits = logits[:, -1, :]                             # [B, V]
+```
+
+Python 把 `a = b = value` 解释为链式赋值——`value` 同时赋给 `a` 和 `b`。`[B, V]` 是一个 Python list，赋给 Tensor 切片 `logits[:, -1, :]` 时类型不匹配，抛出 `TypeError: can't assign a list to a torch.FloatTensor`。如果想把形状标注写在同行，必须用 `#` 注释号。
+
+### 11.2 `torch.full` 的 shape 参数
+
+见[第二节](#二beam-初始化的-bootstrapping-技巧)——`torch.full` 的 shape 必须传元组，`torch.zeros` 可以用展开的 int。原因是 `full` 紧跟着的 `fill_value` 参数让解释器无法区分"哪个数字是 size、哪个是 fill_value"。
+
+### 11.3 `list()` 浅拷贝防止副作用
+
+见[第七节 §7.1](#71-合并)——往已有的 list 里 `.append()` 之前先用 `list()` 拷贝，避免污染原始变量导致后续引用者踩坑。

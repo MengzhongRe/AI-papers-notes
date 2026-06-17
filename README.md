@@ -111,14 +111,18 @@ This repository strictly follows the **"3D Documentation Organization"** tailore
 ---
 
 ### 🌐 Phase 5: 宏观系统与分布式底座 (System Mechanics & Scale)
-*目标：打破单卡认知局限，建立对 FLOPs、显存墙、以及多卡并行通信的架构师级物理直觉。*
+*目标：打破单卡认知局限，建立对 FLOPs、显存墙、多卡并行通信的架构师级物理直觉。*
 
-| 天数 | 核心主题与推演任务 | 核心论文 / 直达链接 | 考核点与测试提示 (Sanity Check) |
-| :--- | :--- | :--- | :--- |
-| **Day 61-62** | **Back-of-the-Envelope**<br>[`system_math.ipynb`]() | **Scaling Laws** 🔗[PDF](https://arxiv.org/pdf/2001.08361.pdf)<br>**Transformer Math** 🔗[Blog](https://blog.eleuther.ai/transformer-math/) | **纸笔推演大厂神题**：手推 7B 模型在 Adam+BF16 训练下的精确显存占用量；推导 Transformer 训练期 $6ND$ 的 FLOPs 计算量公式。 |
-| **Day 63-64** | **Tensor Parallelism**<br>[`tp_linear_mock.py`]() | **Megatron-LM**<br>🔗 [PDF](https://arxiv.org/pdf/1909.08053.pdf) | 写出 `ColumnParallel` 和 `RowParallel` 的前向切分逻辑，并在正确的位置插入 `All-Reduce` 占位符以模拟通信缝合。 |
-| **Day 65-66** | **ZeRO Memory Mock**<br>[`zero_states.py`]() | **ZeRO (DeepSpeed)**<br>🔗 [PDF](https://arxiv.org/pdf/1910.02054.pdf) | 用 Python 字典模拟 $N$ 张卡的显存切片。编写逻辑，验证在 ZeRO-1/2/3 阶段下单卡的绝对占用，模拟 All-Gather 重组。 |
-| **Day 67-69** | **🔥 Ring Attention**<br>[`ring_attention.py`]() | **Ring Attention**<br>🔗 [PDF](https://arxiv.org/pdf/2310.01889.pdf) | **长文本推理绝杀！** 模拟 4 卡通信：Q 驻留本地，K/V 切块在多卡间以环形 (Ring) 传递，在 Python 中用 `yield` 模拟计算与通信重叠。 |
+| 天数 | 核心主题 | 学习方式 | 核心交付物 | 关键资源 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Day 61-62** | **FLOPs & 显存建模** | 📐 Jupyter 数学推导 | `System_Math/system_math.ipynb` | [Transformer Math](https://blog.eleuther.ai/transformer-math/) · [Scaling Laws](https://arxiv.org/abs/2001.08361) |
+| **Day 63-64** | **通信原语 & Ring-AllReduce** | 💻 手撕代码 | `Collectives/ring_allreduce.py` | [NCCL Docs](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/) · BaPipe 图解 |
+| **Day 65-66** | **Tensor Parallelism** | 💻 手撕代码 | `Tensor_Parallel/tp_linear.py` | [Megatron-LM](https://arxiv.org/abs/1909.08053) §3-4 |
+| **Day 67-68** | **Pipeline Parallelism** | 📐 Gantt 图 + 公式推导 | `Pipeline_Parallel/` | [GPipe](https://arxiv.org/abs/1811.06965) · Megatron-LM 2 · [DualPipe](https://github.com/deepseek-ai/DualPipe) |
+| **Day 69-70** | **ZeRO 显存优化** | 💻 Dict 模拟 | `ZeRO/zero_sim.py` | [ZeRO](https://arxiv.org/abs/1910.02054) · [FSDP2 Blog](https://pytorch.org/blog/fsdp2/) |
+| **Day 71-72** | **🔥 Ring Attention** | 💻 手撕代码 | `Ring_Attention/ring_attention.py` | [Ring Attention](https://arxiv.org/abs/2310.01889) · [Ulysses](https://arxiv.org/abs/2309.14509) |
+| **Day 73-74** | **Expert Parallelism (MoE)** | 💻 手撕代码 | `Expert_Parallel/expert_parallel.py` | [DeepSeek-V2](https://arxiv.org/abs/2405.04434) · Megatron Parallel Folding |
+| **Day 75-76** | **混合并行 & 工业前沿** | 📐 案例推演 + 阅读 | `Parallelism_Recipe/` | [DeepSeek-V3](https://arxiv.org/abs/2412.19437) |
 
 
 ### Phase 6: 终极交付 —— "Neuro-Symbolic Reasoning" 引擎 (Day 70-78)

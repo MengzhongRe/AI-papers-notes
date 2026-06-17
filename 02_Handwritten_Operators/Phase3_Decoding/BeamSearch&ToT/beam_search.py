@@ -2,12 +2,15 @@
 # 核心管线与 HF model.generate(num_beams=B, do_sample=False) 对齐
 import torch
 import torch.nn.functional as F
+from typing import Callable
 
 # =====================================================================
 # 模块一: Beam Search 核心函数
 # =====================================================================
-def beam_search(logits_fn, input_ids, num_beams=4, max_new_tokens=128,
-                eos_token_id=None, length_penalty_alpha=0.6, top_k=None):
+def beam_search(logits_fn: Callable[[torch.Tensor], torch.Tensor], input_ids: torch.Tensor,
+                num_beams: int = 4, max_new_tokens: int = 128,
+                eos_token_id: int | None = None, length_penalty_alpha: float = 0.6, 
+                top_k: int | None = None):
     """
     束搜索解码 — 每步维护 B 条最优部分序列，从 B*V 候选中剪枝保留 Top-B。
     内部算法管线与 HuggingFace model.generate(num_beams=B, do_sample=False) 对齐。
@@ -115,6 +118,8 @@ def beam_search(logits_fn, input_ids, num_beams=4, max_new_tokens=128,
     # ===== 4. 最终选取 =====
     # 合并已退役 beam 和仍在跑的活跃 beam，按长度归一化分数公平比较。
     # 注意：此池大小可能 > B，因为历史 EOS 事件越多次，finished_seqs 越长。
+    # list() 是浅拷贝：后续 append 不污染原始 finished_* 变量，
+    # 防止未来有人在循环后引用它们时踩到被追加过的数据。
     all_seqs = list(finished_seqs)
     all_raw = list(finished_scores)
     for b in range(B):
