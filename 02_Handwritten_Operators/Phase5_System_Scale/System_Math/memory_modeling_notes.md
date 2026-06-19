@@ -45,7 +45,7 @@
 | Master weights           | fp32 | 4           | 32.8 GB                |
 | **Model States 合计**      |      | **16**      | **131.2 GB**           |
 
-#### 5.2.1 模型参数和梯度
+#### 1.2.1 模型参数和梯度
 
 这两项最直观。参数是权重矩阵本身，每个元素以 bf16 存储（2 bytes）。梯度是反向传播计算出的 $\frac{\partial L}{\partial W}$，同样以 bf16 存储。两项合计 4 bytes/param，占 Model States 的 25%。
 
@@ -84,7 +84,7 @@ $$W_{t+1} = W_t - \eta \cdot \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}$$
 
 $\epsilon = 10^{-8}$ 防止除零（在 $v$ 趋近 0 的罕见情况下）。
 
-**（三）偏差校正 —— 为什么用 $\hat{m}_t, \hat{v}_t$ 而非 $m_t, v_t$**
+**（三）偏差校正 —— 为什么用 $\hat{m}_t, \hat{v}_t$ 而非 $m_t$ 与 $v_t$**
 
 $m_0 = 0$, $v_0 = 0$。在训练刚开始时（$t=1,2,3,\ldots$），初始的几百步中递推的信大部分来自 0 而非真实梯度。
 
@@ -120,7 +120,7 @@ $m_t$ 累积了成千上万步梯度。每一步的增量 $\Delta m = (1-\beta_1
 
 $v_t$ 同理。**因此 m 和 v 必须在 fp32 下累积。** 每个参数：m(4B) + v(4B) = 8 bytes。Qwen3-8B 共 82 亿参数 → m+v = **65.6 GB**，占 Model States 的 50%。
 
-#### 5.2.3 Master Weights — 混合精度的精度锚点
+#### 1.2.3 Master Weights — 混合精度的精度锚点
 
 前向/反向以 bf16 进行（利用 Tensor Core 加速），但 optimizer.step() 的更新量通常在 $10^{-6} \sim 10^{-8}$ 量级。
 
@@ -130,7 +130,7 @@ $v_t$ 同理。**因此 m 和 v 必须在 fp32 下累积。** 每个参数：m(4
 
 **所以混合精度训练的 Model States 和全 fp32 训练一样大**——都是 16 bytes/param（见 §1.3 对比）。混合精度省的不是 model states，是计算吞吐（Tensor Core bf16 比 fp32 快 ~15×）+ 激活值显存（bf16 存储比 fp32 省一半）。
 
-#### 5.2.4 显存占比总结
+#### 1.2.4 显存占比总结
 
 | 组件                    | Bytes/param | 占 Model States | Qwen3-8B |
 | --------------------- | ----------- | -------------- | -------- |
@@ -138,7 +138,7 @@ $v_t$ 同理。**因此 m 和 v 必须在 fp32 下累积。** 每个参数：m(4
 | Adam m + v (fp32)     | 8           | **50%**        | 65.6 GB  |
 | Master weights (fp32) | 4           | 25%            | 32.8 GB  |
 
-**Adam 相关的三份 fp32 状态（m + v + master）合计 12 bytes/param = 75% 的 Model States。** 这就是 ZeRO 的第一刀砍向 optimizer states 的根本原因——只此一项省掉 75%，显存从 131 GB 骤降至 ~33 GB（ZeRO-1, Np=4），5.3 节的表给出了完整对比。
+**Adam 相关的三份 fp32 状态（m + v + master）合计 12 bytes/param = 75% 的 Model States。** 这就是 ZeRO 的第一刀砍向 optimizer states 的根本原因——只此一项省掉 75%，显存从 131 GB 骤降至 ~33 GB（ZeRO-1, Np=4），§1.3 的对比表给出了完整对比。
 
 ## 1.3 为什么全 fp32 训练也是 16 bytes/param
 
@@ -189,10 +189,6 @@ PyTorch 使用 **caching allocator** 管理 GPU 显存。当一个张量被释�
 
 ---
 
-## 1.5 推理 vs 训练的显存
-
----
-
 # 第 2 章：激活值显存逐层分解
 
 > **知识定位**：Model States 讲了「参数本身就占的显存」，这章讲「为了训练需要额外保存的中间结果」。激活值的量级由 B、S、d、L 决定——先推导通用公式，再用 Qwen3-8B 验证。
@@ -200,9 +196,7 @@ PyTorch 使用 **caching allocator** 管理 GPU 显存。当一个张量被释�
 ## 2.1 激活值是什么、为什么必须保存
 
 考虑一个简单的两层计算：
-$$z = W_2 \cdot \text{ReLU}(W_1 \cdot x)
-
-$$
+$$z = W_2 \cdot \text{ReLU}(W_1 \cdot x)$$
 
 反向传播计算$\frac{\partial L}{\partial W_2}$时需要$\text{ReLU}(W_1 \cdot x)$的值。计算$\frac{\partial L}{\partial W_1}$时需要$x$、$\frac{\partial L}{\partial z}$、以及$W_1 \cdot x$的 pre-activation（ReLU 在$x<0$处梯度为 0，需要知道哪些元素是激活的）。
 
@@ -219,7 +213,7 @@ $$
 | SiLU | pre-activation$x$——$\frac{\partial \text{SiLU}}{\partial x}$依赖$x$|
 | RMSNorm | 原始输入$\mathbf{x}$|
 | 逐元素乘法$\odot$| 两个输入之一（反向需要另一个输入的值） |
-| Softmax | scores$s$（或 softmax 后的$p$） |
+| Softmax | 输出$P$（反向只用$P$，不需输入 Scores） |
 
 **关键观察**：激活值来源分为两类——(a) **matmul 的输入张量**（形状即参与 matmul 的张量的维度），(b) **激活函数的输入**（形状通常是 matmul 的输出）。前者是显存的主体。
 
@@ -240,79 +234,81 @@ X → RMSNorm → Q_proj → Q  ─┐
 | # | 张量 | 形状 | 为什么需要 |
 |---|------|------|-----------|
 | ① | RMSNorm 输入 |$[B, S, d]$| RMSNorm 反向需要原始$\mathbf{x}$|
-| ② | Q |$[B, n_h, S, d_h]$|$QK^T$matmul 的输入 |
-| ③ | K |$[B, n_{kv}, S, d_h]$|$QK^T$matmul 的输入 |
-| ④ | V |$[B, n_{kv}, S, d_h]$|$PV$matmul 的输入 |
-| ⑤ | Scores（$QK^T$结果） |$[B, n_h, S, S]$| Softmax 反向需要 |
-| ⑥ |$P = \text{softmax}(\text{Scores})$|$[B, n_h, S, S]$|$PV$matmul 的输入 |
-| ⑦ |$PV$结果 |$[B, n_h, S, d_h]$| Output 投影的输入（concat 前） |
-| ⑧ | Output 投影输入（concat 后） |$[B, S, d]$| O 投影反向需要 |
+| ② | RMSNorm 输出（= Q/K/V 投影的输入） |$[B, S, d]$| Q_proj、K_proj、V_proj 反向需要（$\frac{\partial L}{\partial W} = X^T \cdot \frac{\partial L}{\partial Y}$，$X$ 即此输入） |
+| ③ | Q |$[B, n_h, S, d_h]$|$QK^T$ matmul 的输入 |
+| ④ | K |$[B, n_{kv}, S, d_h]$|$QK^T$ matmul 的输入 |
+| ⑤ | V |$[B, n_{kv}, S, d_h]$|$PV$ matmul 的输入 |
+| ⑥ | $P = \text{softmax}(QK^T/\sqrt{d})$ |$[B, n_h, S, S]$|$PV$ matmul 的输入。Softmax 反向只需输出 P，无需 Scores（梯度公式只用 P 和上游梯度） |
+| ⑦ | $PV$ 结果 |$[B, n_h, S, d_h]$| Output 投影的输入（concat 前） |
+| ⑧ | Output 投影输入（concat 后，= ⑦ reshape） |$[B, S, d]$| 与 ⑦ 共享 HBM，不额外占用显存 |
 
-**⑤ 和 ⑥ 是两个$S^2$张量**——整个 Transformer 中最大的单层激活值。FlashAttention（§6.3.3）通过分块计算回避了它们的 HBM 物化。
+**⑧ 是 ⑦ 的 reshape 视图**——元素相同、内存相同（零拷贝 view）。只计一次。
+
+**⑥ 是唯一的 $S^2$ 张量**——整个 Transformer 中最大的单层激活值。FlashAttention（§2.3.3）通过分块计算回避了它的 HBM 物化。
+
+> **为什么不需要保存 Scores？** 标准框架的 Softmax 反向只用输出 $P$：
+> $$\frac{\partial L}{\partial s_i} = P_i \cdot \left(\frac{\partial L}{\partial P_i} - \sum_j P_j \cdot \frac{\partial L}{\partial P_j}\right)$$
+> $QK^T$ matmul 反向需要 Q 和 K（已分别在 ③④ 中保留），无需 Scores。注意：某些框架可能因实现差异额外保留 Scores，本章按标准行为推导。
 
 ### 2.3.2 逐项显存的通用公式
 
-①②③④⑦⑧ 各张量的记忆 = 元素数量$\times 2$bytes。
+①②③④⑤⑥⑦⑧ 各张量的记忆 = 元素数量$\times 2$bytes。⑧ 与 ⑦ 共享 HBM，不计入总额。
 
-①$M_{norm\_in} = 2 B S d$
+① $M_{norm\_in} = 2 B S d$
 
-②$M_Q = 2 B n_h S d_h = 2 B S d$（因$n_h d_h = d$）
+② $M_{norm\_out} = 2 B S d$
 
-③$M_K = 2 B n_{kv} S d_h$
+③ $M_Q = 2 B n_h S d_h = 2 B S d$（因 $n_h d_h = d$）
 
-④$M_V = 2 B n_{kv} S d_h = M_K$
+④ $M_K = 2 B n_{kv} S d_h$
 
-⑤$M_{scores} = 2 B n_h S^2$**（$S^2$项——最大单张激活值）**
+⑤ $M_V = 2 B n_{kv} S d_h = M_K$
 
-⑥$M_P = 2 B n_h S^2$同 Scores
+⑥ $M_P = 2 B n_h S^2$ **（唯一的 $S^2$ 项——最大单张激活值）**
 
-⑦$M_{PV} = 2 B S d$（$n_h d_h = d$，concat 前元素总数不变）
+⑦ $M_{PV} = 2 B S d$（$n_h d_h = d$，concat 前元素总数不变）
 
-⑧$M_{o\_in} = 2 B S d$
+⑧ $M_{o\_in}$ — 与 ⑦ 相同内存，不额外计入
 
 **一层 Attention 激活值（不使用 FA）**：
-$$
 
-\begin{aligned}
-M_{attn}^{no\_FA} &= ①+②+③+④+⑤+⑥+⑦+⑧ \\[4pt]
-&= 2BSd + 2BSd + 2BS(n_{kv}d_h) + 2BS(n_{kv}d_h) + 2Bn_hS^2 + 2Bn_hS^2 + 2BSd + 2BSd \\[4pt]
-&= 2BS(3d + 2 n_{kv} d_h) + 4 B n_h S^2
-\end{aligned}
+$$\begin{aligned}
+M_{attn}^{no\_FA} &= ①+②+③+④+⑤+⑥+⑦ \\[4pt]
+&= 2BSd + 2BSd + 2BSd + 2BS(n_{kv}d_h) + 2BS(n_{kv}d_h) + 2Bn_hS^2 + 2BSd \\[4pt]
+&= 2BS(4d + 2 n_{kv} d_h) + 2 B n_h S^2
+\end{aligned}$$
 
-$$GQA 4:1（$n_{kv} = n_h/4, n_{kv} d_h = d/4$）：$$
+（展开中 $2BSd$ 共出现 4 次：①、②、③、⑦。⑧ 与 ⑦ 共享 HBM，不计入总额。）
 
-M_{attn}^{no\_FA,GQA\;4:1} = 2BS \cdot 3.5d + 4 B n_h S^2
+GQA 4:1（$n_{kv} = n_h/4, n_{kv} d_h = d/4$）：
 
-$$Dense MHA（$n_{kv} = n_h, n_{kv} d_h = d$）：$$
+$$M_{attn}^{no\_FA,GQA\;4:1} = 2BS \cdot 4.5d + 2 B n_h S^2$$
 
-M_{attn}^{no\_FA,MHA} = 2BS \cdot 5d + 4 B n_h S^2
+Dense MHA（$n_{kv} = n_h, n_{kv} d_h = d$）：
 
-$$
+$$M_{attn}^{no\_FA,MHA} = 2BS \cdot 6d + 2 B n_h S^2$$
 
 ### 2.3.3 FlashAttention 的激活值节省
 
-FlashAttention 不在 HBM 中物化$[B, n_h, S, S]$的 Scores 和 Softmax 矩阵。Q、K、V 切成 tile 在 SRAM 中处理，仅维护$(m, l)$两个 online softmax 统计量（形状$[B, n_h, S]$，远小于$S^2$）。
+FlashAttention 不在 HBM 中物化 $[B, n_h, S, S]$ 的 Softmax 矩阵。Q、K、V 切成 tile 在 SRAM 中处理，仅维护 $(m, l)$ 两个 online softmax 统计量（形状 $[B, n_h, S]$，远小于 $S^2$）。
 
 使用 FA 后：
-- ⑤$M_{scores}$**移除**（$2 B n_h S^2 \to 0$）
-- ⑥$M_P$**移除**（$2 B n_h S^2 \to 0$）
-- 额外存储$(m, l)$≈$2 \cdot 2 B n_h S$bytes（对 S=2048 约 0.5 MB，忽略）
+- ⑥ $M_P$ **移除**（$2 B n_h S^2 \to 0$）
+- 额外存储 $(m, l)$ ≈ $4 B n_h S$ bytes（fp32，对 S=2048 约 0.5 MB，忽略）
 
 **一层 Attention 激活值（使用 FA）**：
-$$
 
-M_{attn}^{FA} = 2BS(3d + 2 n_{kv} d_h)
+$$M_{attn}^{FA} = 2BS(4d + 2 n_{kv} d_h)$$
 
-$$GQA 4:1：$$
+GQA 4:1：
 
- M_{attn}^{FA,GQA\;4:1} = 2BS \cdot 3.5d
+$$M_{attn}^{FA,GQA\;4:1} = 2BS \cdot 4.5d$$
 
-$$
-
-> **例：Qwen3-8B（FA, GQA 4:1, B=1, S=2048, d=4096, d_h=128, n_{kv}=8）**。
+> **例：Qwen3-8B（FA, GQA 4:1, B=1, S=2048, d=4096, d_h=128, n_{kv}=8）**
 >
-> 通用公式：$2 \cdot 1 \cdot 2048 \cdot 3.5 \cdot 4096 = 58.7$MB。
-> 逐项验证：① norm 输入 =$1 \cdot 2048 \cdot 4096 \cdot 2 = 16$MB。② Q =$1 \cdot 32 \cdot 2048 \cdot 128 \cdot 2 = 16$MB。③ K =$1 \cdot 8 \cdot 2048 \cdot 128 \cdot 2 = 4$MB。④ V = 4 MB。⑦ PV 结果 =$1 \cdot 32 \cdot 2048 \cdot 128 \cdot 2 = 16$MB。⑧ O 投影输入 =$1 \cdot 2048 \cdot 4096 \cdot 2 = 16$MB。合计 =$16+16+4+4+16+16 = 72$MB。⑦⑧ 可能共享内存（同一数据的不同视图），框架实际开销在 59−72 MB 之间。
+> 通用公式：$2 \cdot 1 \cdot 2048 \cdot 4.5 \cdot 4096 \approx 72$ MiB（十进制表示约 75.5 MB，GPU 领域惯例用二进制单位）。
+>
+> 逐项验证：① norm 输入 = $1 \cdot 2048 \cdot 4096 \cdot 2 = 16$ MiB。② norm 输出 = 16 MiB。③ Q = $1 \cdot 32 \cdot 2048 \cdot 128 \cdot 2 = 16$ MiB。④ K = $1 \cdot 8 \cdot 2048 \cdot 128 \cdot 2 = 4$ MiB。⑤ V = 4 MiB。⑦ PV 结果 = $1 \cdot 32 \cdot 2048 \cdot 128 \cdot 2 = 16$ MiB。（⑧ 是 ⑦ 的 reshape 视图，共享内存，不计额外。）合计 = $16+16+16+4+4+16 = 72$ MiB。加上 FA 的 $(m, l)$ 统计量（< 1 MiB），实际约 **72 MiB**。与通用公式一致。
 
 ## 2.4 FFN 层（SwiGLU）— 通用激活值公式
 
@@ -327,33 +323,42 @@ X → RMSNorm → gate_proj → g → SiLU → gated ─┐
 
 | # | 张量 | 形状 | 为什么需要 |
 |---|------|------|-----------|
-| ① | RMSNorm 输入 |$[B, S, d]$| RMSNorm 反向需要 |
-| ② | gate_proj 输出$g$|$[B, S, d_{ff}]$| SiLU 反向需要 pre-activation |
-| ③ | up_proj 输出$u$|$[B, S, d_{ff}]$|$\odot$反向需要另一个输入 |
-| ④ | gated 结果 |$[B, S, d_{ff}]$| down_proj matmul 的输入 |
+| ① | RMSNorm 输入 |$[B, S, d]$| RMSNorm 反向需要原始$\mathbf{x}$|
+| ② | RMSNorm 输出 (= gate/up 的输入) |$[B, S, d]$| gate_proj 和 up_proj 反向需要（$\frac{\partial L}{\partial W} = X^T \cdot \frac{\partial L}{\partial Y}$，$X$ 即此输入） |
+| ③ | gate_proj 输出 $g$ |$[B, S, d_{ff}]$| SiLU 反向需要 pre-activation |
+| ④ | up_proj 输出 $u$ |$[B, S, d_{ff}]$| $\odot$ 反向需要另一个操作数（$\frac{\partial L}{\partial (\text{SiLU}(g))} = \frac{\partial L}{\partial \text{gated}} \odot u$） |
+| ⑤ | SiLU(g) 结果 |$[B, S, d_{ff}]$| $\odot$ 反向需要（$\frac{\partial L}{\partial u} = \frac{\partial L}{\partial \text{gated}} \odot \text{SiLU}(g)$）。无法从 gated/u 安全反推（除以零风险） |
+| ⑥ | gated 结果 (= SiLU(g) ⊙ u) |$[B, S, d_{ff}]$| down_proj matmul 的输入 |
 
-（④ 和 down_proj 输入是同一块内存，框架会复用。）
+（② 在 Attention 层也同样需要——QKV 投影的输入就是 Attn RMSNorm 的输出。但在 Attention 激活值分析 §2.3 中，Q/K/V 投影的输入我们已经计入了——它正是 Q/K/V 投影反向所需要的。② 因此不是新增的遗漏，而是 Attn 和 FFN 两侧对称。）
+
+**补充说明：FFN 输出需要保留吗？**
+
+不需要。残差连接 $x = x + \text{ffn\_out}$ 的加法反向不依赖任何操作数——梯度直接透传（$\frac{\partial (a+b)}{\partial a} = 1$）。ffn_out 自身不需要被 FFN 子层保留。它作为下一层 RMSNorm 的输入在下一层被消费——但那是**下一层**的激活值预算，不在本层重复计入。
 
 ### 2.4.2 逐项显存的通用公式
 
-①$M_{norm\_in} = 2 B S d$
+① $M_{norm\_in} = 2 B S d$
 
-②$M_{gate\_out} = 2 B S d_{ff}$
+② $M_{norm\_out} = 2 B S d$
 
-③$M_{up\_out} = 2 B S d_{ff}$
+③ $M_{gate\_out} = 2 B S d_{ff}$
 
-④$M_{gated} = 2 B S d_{ff}$
+④ $M_{up\_out} = 2 B S d_{ff}$
+
+⑤ $M_{silu\_out} = 2 B S d_{ff}$
+
+⑥ $M_{gated} = 2 B S d_{ff}$
+
+（⑥ 和 down_proj 输入是同一块内存，框架复用，不另计。）
 
 **一层 FFN 激活值**：
-$$
 
-M_{ffn} = 2BSd + 2BSd_{ff} + 2BSd_{ff} + 2BSd_{ff} = 2BS(d + 3d_{ff})
-
-$$
+$$M_{ffn} = 2BSd + 2BSd + 2BSd_{ff} + 2BSd_{ff} + 2BSd_{ff} + 2BSd_{ff} = 2BS(2d + 4d_{ff})$$
 
 > **例：Qwen3-8B（d=4096, d_ff=12288, B=1, S=2048）**。
->$M_{ffn} = 2 \cdot 1 \cdot 2048 \cdot (4096 + 3 \cdot 12288) = 2 \cdot 2048 \cdot 40960 = 160$MB。
-> 逐项验证：① 16 MB + ② 48 MB + ③ 48 MB + ④ 48 MB = 160 MB ✓。
+> $M_{ffn} = 2 \cdot 1 \cdot 2048 \cdot (2 \cdot 4096 + 4 \cdot 12288) = 2 \cdot 2048 \cdot 57344 \approx 224$ MB。
+> 逐项验证：① 16 MB + ② 16 MB + ③ 48 MB + ④ 48 MB + ⑤ 48 MB + ⑥ 48 MB = 224 MB ✓。
 
 ## 2.5 全模型激活值汇总
 
@@ -362,44 +367,38 @@ $$
 每层 Block：$M_{block} = M_{attn}^{FA} + M_{ffn}$
 $$
 
-M_{block} = 2BS(3d + 2 n_{kv} d_h) + 2BS(d + 3d_{ff})
+M_{block} = 2BS(4d + 2 n_{kv} d_h) + 2BS(2d + 4d_{ff})
 
 $$
 
-LM Head 输入：$M_{lm\_in} = 2BSd$
+LM Head 相关（全模型仅 1 份，不随 $L$ 增长）：
+- 最终 RMSNorm 输入（= 最后一层输出 $x_L$）：$2BSd$
+- LM Head 输入（= 最终 RMSNorm 输出）：$2BSd$
 
-额外 RMSNorm 输入（与 Attention/FFN 的 norm 输入有重叠，保守额外计 L 份）：$\approx 2BSd \cdot L$
+每层的 RMSNorm 输入（`attn_norm_in` 和 `ffn_norm_in`）已在 $M_{attn}^{FA}$ 和 $M_{ffn}$ 中分别计入。残差流中的 hidden state 在轮到它作为下一个子层 RMSNorm 的输入时被自然保留——不需额外再加 "residual states"。
 
-Residual states：$\approx 4BSd \cdot L$
-
-**全模型激活值**：
+**全模型激活值（紧致公式）**：
+$$
+M_{activations} = L \cdot M_{block} \;+\; 2BSd \;+\; 2BSd
 $$
 
-\begin{aligned}
-M_{activations} &\approx L \cdot 2BS(3d + 2 n_{kv} d_h + d + 3d_{ff}) \;+\; 2BSd \;+\; 2BSd \cdot L \;+\; 4BSd \cdot L \\[4pt]
-&= L \cdot 2BS(4d + 2 n_{kv} d_h + 3d_{ff}) \;+\; 2BSd \;+\; 4BSd \cdot L
-\end{aligned}
+展开（GQA 4:1 下 $2 n_{kv} d_h = d/2$）：
 
-$$GQA 4:1 下$2 n_{kv} d_h = d/2$：$$
+$$M_{activations}^{GQA\;4:1} = 2BS \cdot L \cdot (6.5d + 4d_{ff}) \;+\; 4BSd$$
 
-M_{activations}^{GQA\;4:1} \approx 2BS \cdot L \cdot (4.5d + 3d_{ff}) \;+\; 2BSd \;(+\; 4BSd \cdot L)
+### 2.5.2 Qwen3-8B 数值（B=1, S=2048, bf16, FA, 单位 MiB/GiB）
 
-$$
+| 组件 | 公式 | 单层 | ×36 |
+|------|------|------|-----|
+| Attention（FA, GQA） | $2BS(4d + 2 n_{kv} d_h)$ | ~72 MiB | ~2.53 GiB |
+| FFN | $2BS(2d + 4d_{ff})$ | ~224 MiB | ~7.88 GiB |
+| 最终 RMSNorm 输入 | $2BSd$ | — | ~16 MiB |
+| LM Head 输入 | $2BSd$ | — | ~16 MiB |
+| **总计** | | | **≈ 10.44 GiB** |
 
-### 2.5.2 Qwen3-8B 数值（B=1, S=2048, bf16, FA）
+验证 — Attention 逐项（FA）：① 16 MiB + ② 16 MiB + ③ 16 MiB + ④ 4 MiB + ⑤ 4 MiB + ⑦ 16 MiB = 72 MiB。FFN 逐项：① 16 MiB + ② 16 MiB + ③ 48 MiB + ④ 48 MiB + ⑤ 48 MiB + ⑥ 48 MiB = 224 MiB。Per block = 296 MiB × 36 = 10,656 MiB ≈ 10.41 GiB。加最终 LM Head 相关 32 MiB ≈ 10.44 GiB。✓
 
-| 组件 | 通用公式 | 单层 | ×36 |
-|------|---------|------|-----|
-| Attention（FA, GQA） |$2BS(3d + 2 n_{kv} d_h)$| ~59−72 MB | ~2.1−2.6 GB |
-| FFN |$2BS(d + 3d_{ff})$| 160 MB | 5.76 GB |
-| LM Head 输入 |$2BSd$| 16 MB | 16 MB |
-| 额外 norm 输入 |$2BSd$per | ~16 MB | ~0.6 GB |
-| Residual states | 估算 | | ~0.5 GB |
-| **总计** | | | **≈ 9.0 GB** |
-
-（注：Attention 行取 59 MB 时全模型 ≈ 8.6 GB；取 72 MB 时 ≈ 9.0 GB。具体差异取决于框架内存复用策略。）
-
-**不使用 FlashAttention**：⑤+⑥ 恢复$4 B n_h S^2 = 4 \cdot 1 \cdot 32 \cdot 2048^2 = 512$MB/层。36 层 = +18.4 GB → **总计 ≈ 27.4 GB**。FA 节省 67%。
+**不使用 FlashAttention**：恢复 ⑥ $M_P = 2 B n_h S^2 = 2 \cdot 1 \cdot 32 \cdot 2048^2 = 256$ MiB/层。36 层增加 9,216 MiB ≈ 9.0 GiB → **总计 ≈ 19.44 GiB**。FA 节省约 46%。
 
 ### 2.5.3 激活值与 S、B 的标度关系
 
@@ -408,23 +407,23 @@ $$
 | 组件 | S 依赖 | B 依赖 | S 翻倍时 |
 |------|--------|--------|---------|
 | Q, K, V 等线性项 |$\propto S$|$\propto B$| ×2 |
-| Scores + Softmax（无 FA） |$\propto S^2$|$\propto B$| **×4** |
+| P = softmax(QK^T)（无 FA） |$\propto S^2$|$\propto B$| **×4** |
 | FFN 激活值 |$\propto S$|$\propto B$| ×2 |
 | Norm 输入 |$\propto S$|$\propto B$| ×2 |
 
-**关键洞察**：$S^2$项是长序列的头号敌人。S=2048 时 FA 已将其消除；S 继续增大 FA 依然有效（tile 大小恒定）。如果不用 FA，S=32768 时 Scores 矩阵 =$2 \cdot 32 \cdot 32768^2 \approx 64$GB **per layer**——一层的 Scores 就已超单卡 HBM 容量。
+**关键洞察**：$S^2$项是长序列的头号敌人。S=2048 时 FA 已将其消除；S 继续增大 FA 依然有效（tile 大小恒定）。如果不用 FA，S=32768 时 $M_P = 2 \cdot 32 \cdot 32768^2 \approx 64$ GiB **per layer**——一个层的 P 矩阵就已几乎占满单卡 HBM。
 
 ---
 
 # 第 3 章：Activation Checkpointing 的数学
 
-> **知识定位**：第 2 章算出了激活值约 9 GB（FA 下）。这章讲怎么把这个数字再压下去——用额外的计算换显存。AC 是 ZeRO/TP 的天然互补：ZeRO 省 Model States（第 1 章），AC 省 Residual States（本章）。
+> **知识定位**：第 2 章算出了激活值约 11 GB（FA 下）。这章讲怎么把这个数字再压下去——用额外的计算换显存。AC 是 ZeRO/TP 的天然互补：ZeRO 省 Model States（第 1 章），AC 省 Residual States（本章）。
 
 ## 3.1 基本思想：不存，需要时重算
 
 ### 3.1.1 什么是 Checkpointing
 
-标准训练在每一步前向传播时，把$L$层中所有算子产生的中间激活值全部存下来（第 2 章分析的那份清单），供反向传播使用。总激活值 ≈ 9 GB。
+标准训练在每一步前向传播时，把$L$层中所有算子产生的中间激活值全部存下来（第 2 章分析的那份清单），供反向传播使用。总激活值 ≈ 12 GB。
 
 Activation Checkpointing 修改了前向阶段的存储策略：
 
@@ -470,43 +469,43 @@ AC 的显存节省来源非常明确：段内部的激活值被丢弃。保留�
 
 对于 Qwen3-8B（L=36, B=1, S=2048, FA），取 segment size = 1（每层 checkpoint）：
 
-**保留**：$L+1 = 37$个边界 hidden states。每个 =$2 B S d = 2 \cdot 1 \cdot 2048 \cdot 4096 = 16$MB。总计 ≈$37 \times 16 = 0.59$GB。
+**保留**：$L+1 = 37$个边界 hidden states。每个 =$2 B S d = 2 \cdot 1 \cdot 2048 \cdot 4096 = 16$ MiB。总计 ≈$37 \times 16 = 592$ MiB ≈ 0.58 GiB。
 
-**丢弃**：所有层内部的激活值。根据 §6.5，总激活值 ≈ 9.0 GB，去掉约 0.6 GB 的边界 hidden states 后，约 8.4 GB 内部激活值被丢弃。
+**丢弃**：所有层内部的激活值。根据 §2.5.2，总激活值 ≈ 10.44 GiB，去掉约 0.58 GiB 的边界 hidden states 后，约 9.86 GiB 内部激活值被丢弃。
 
-**结论**：segment size = 1 时，激活值从 9.0 GB → ~0.6 GB，节省 **93%**。
+**结论**：segment size = 1 时，激活值从 ~10.44 GiB → ~0.58 GiB，节省 **~94%**。
 
-取 segment size = 2（每 2 层 checkpoint）：保留$L/2 + 1 = 19$个边界 hidden states ≈ 0.30 GB。丢弃约 8.1 GB 内部激活值（段边界从每层变为每 2 层，段内部的第 2 层不再丢弃其输入——仍被保留为 checkpoint 的一部分，但这不是内部激活值。实际上段大小只是改变了 checkpoint 的密度）。节省约 90%。
+取 segment size = 2（每 2 层 checkpoint）：保留$L/2 + 1 = 19$个边界 hidden states ≈ 300 MiB。内部激活值丢弃约 7.5 GiB（段大小为 2 时，段内第 2 层部分激活值仍被保留）。节省约 70-75%。
 
 **无论 segment size 多少，FLOPs 代价始终是 +33%。** 显存节省随 segment size 减小而增大（checkpoint 越密 → 丢弃得越彻底 → 保留得越少）。segment size = 1 是最极端的省显存配置。
 
 ## 3.2 选择性 Checkpointing：不是所有层都需要 checkpoint
 
-并不是模型中的每层都产生同样多的激活值。回顾 §6.3 和 §6.4：
+并不是模型中的每层都产生同样多的激活值。回顾 §2.3 和 §2.4：
 
 | 模块 | 激活值（FA, GQA, S=2048） | 占全层激活值 | FLOPs 占全层 |
 |------|-------------------------|------------|------------|
-| Attention（含 norm 输入） | ~72 MB | 31% | 28% |
-| FFN（含 norm 输入） | ~160 MB | 69% | 72% |
+| Attention（含 norm 输入） | ~72 MiB | 24% | 28% |
+| FFN（含 norm 输入） | ~224 MiB | 76% | 72% |
 
 **Attention-only AC**：只 checkpoint attention 层，FFN 层的激活值正常保留。
 
 - FLOPs 代价：只有 attention 被重算 → 额外 FLOPs ≈ 28% 的前向 FLOPs → 总训练 FLOPs 增加约 9%
 - 显存节省：丢弃 attention 内部激活值（~56 MB/层，去掉 norm 输入 16 MB 后）× 36 ≈ 2.0 GB
 
-**适合场景**：不使用 FlashAttention 时（Scores 256MB/层），attention-only AC 能省掉 512MB/层（Scores + Softmax 各 256MB）→ 36 层 = 18.4 GB。但在使用 FA 后，attention 激活值已经被压缩到 ~72 MB/层，attention-only AC 的性价比下降——省 ~2 GB 换 +9% FLOPs，看场景权衡。
+**适合场景**：不使用 FlashAttention 时（P 矩阵 256 MiB/层），attention-only AC 能省掉 256 MiB/层 × 36 ≈ 9.0 GiB。但在使用 FA 后，attention 激活值已经被压缩到 ~72 MiB/层，attention-only AC 的性价比下降——省 ~2 GiB 换 +9% FLOPs，看场景权衡。
 
 ## 3.3 AC 不能省什么
 
 AC 只动激活值（Residual States），**不碰 Model States**。
 
-这一点需要非常清楚：就算你把 segment size 设为 1（每层 checkpoint），激活值几乎降到 0，Model States 依然是 131.2 GB 纹丝不动（参数 16.4 + 梯度 16.4 + Adam m 32.8 + Adam v 32.8 + master 32.8）。**AC 省的是 ~9 GB 的激活值，不是 131 GB 的 Model States。**
+这一点需要非常清楚：就算你把 segment size 设为 1（每层 checkpoint），激活值几乎降到 0，Model States 依然是 131.2 GB 纹丝不动（参数 16.4 + 梯度 16.4 + Adam m 32.8 + Adam v 32.8 + master 32.8）。**AC 省的是 ~10.4 GiB 的激活值，不是 131 GB 的 Model States。**
 
 这就是为什么 AC 永远不是独立解药。它在分布式训练中的正确位置是：
 
 - **ZeRO-3** 把 Model States 从 131 GB → 131/Np GB（Np=4 → 33 GB）
-- **AC** 把激活值从 9 GB → ~1 GB
-- **组合**：每卡 33 + 1 ≈ 34 GB，在 A100-80G 中轻松训练
+- **AC** 把激活值从 12 GB → ~1 GB
+- **组合**：每卡 33 + 1 ≈ 34 GB，在 A100-80G 中轻松训练。加上 ZeRO-3 AllGather buffer 和框架开销，实际每卡约 36-38 GB。
 
 ---
 
@@ -578,7 +577,8 @@ optimizer.zero_grad()
 | $V$ | 152064 |
 | 总参数量 | ~8.2B |
 | 训练总 Model States | 131.2 GB (16 bytes/param) |
-| 激活值 (FA) | ~9 GB ($B=1,S=2048$) |
+| 激活值 (FA) | ~10.4 GiB ($B=1,S=2048$) |
+| 激活值 (no FA) | ~19.4 GiB ($B=1,S=2048$) |
 
 ## 5.2 显存完整账单（单卡 bf16 训练）
 
@@ -592,18 +592,18 @@ optimizer.zero_grad()
 | Adam v (fp32)         | 32.8 GB        |
 | Master weights (fp32) | 32.8 GB        |
 | **Model States 小计**   | **131.2 GB**   |
-| 激活值 (FA)              | ~10 GB         |
-| 激活值 (no FA)           | ~19 GB         |
-| **总计 (FA)**           | **141.2 GB** ⛔ |
-| **总计 (no FA)**        | **150.2 GB** ⛔ |
+| 激活值 (FA)              | ~10.4 GiB      |
+| 激活值 (no FA)           | ~19.4 GiB      |
+| **总计 (FA)**           | **~142 GiB** ⛔ |
+| **总计 (no FA)**        | **~151 GiB** ⛔ |
 
 ### 加入 AC (每 2 层 checkpoint, FA)
 
 | 组件 | 大小 |
 |------|------|
 | Model States | 131.2 GB |
-| 激活值 (AC C=2) | ~5 GB |
-| **总计** | **136.2 GB** ⛔ |
+| 激活值 (AC C=2) | ~5.5 GiB |
+| **总计** | **~137 GiB** ⛔ |
 
 ### 加入 AC + ZeRO-3 (Np=4, FA)
 
@@ -615,22 +615,22 @@ optimizer.zero_grad()
 | Adam v (fp32, 1/4)      | 8.2 GB         |
 | Master (fp32, 1/4)      | 8.2 GB         |
 | **Model States 小计**     | **32.8 GB**    |
-| 激活值 (AC+FA)             | ~5 GB          |
-| ZeRO-3 AllGather buffer | ~1 GB          |
-| **总计 (per GPU)**        | **~38.8 GB** ✅ |
+| 激活值 (AC+FA)             | ~5.5 GiB       |
+| ZeRO-3 AllGather buffer | ~1 GiB         |
+| **总计 (per GPU)**        | **~39 GiB** ✅ |
 
-Np=4 时，每卡 38.8 GB——正好在 A100-80G / H100-80G 的舒适区内。
+Np=4 时，每卡 ~39 GiB——在 A100-80G / H100-80G 的舒适区内。
 
 ## 5.3 多组 (bs, seq) 配置对比
 
-| B | S | Model States | 激活值 (FA) | 创建值 (no FA) | Total (FA+AC+Z3 Np=4) | 结论 |
+| B | S | Model States | 激活值 (FA) | 激活值 (no FA) | Total (FA+AC+Z3 Np=4) | 结论 |
 |---|----|-------------|-----------|-------------|----------------------|------|
-| 1 | 512 | 32.8 GB | ~2.5 GB | ~5 GB | ~35.3 GB | ✅ |
-| 1 | 2048 | 32.8 GB | ~5 GB | ~19 GB | ~37.8 GB | ✅ |
-| 1 | 8192 | 32.8 GB | ~12 GB | ~76 GB | ~44.8 GB | ✅ |
-| 1 | 32768 | 32.8 GB | ~40 GB | ~304 GB | ⛔ (even with Z3) | ❌ |
-| 8 | 2048 | 32.8 GB | ~8 GB | ~32 GB | ~40.8 GB | ✅ |
-| 64 | 2048 | 32.8 GB | ~20 GB | ~80 GB | ⛔ | ❌ |
+| 1 | 512 | 32.8 GB | ~2.6 GiB | ~3.2 GiB | ~35 GiB | ✅ |
+| 1 | 2048 | 32.8 GB | ~10.4 GiB | ~19.4 GiB | ~39 GiB | ✅ |
+| 1 | 8192 | 32.8 GB | ~41.8 GiB | ~186 GiB | ~55 GiB | ✅ |
+| 1 | 32768 | 32.8 GB | ~167 GiB | ~2,471 GiB | ⛔ (even with Z3) | ❌ |
+| 8 | 2048 | 32.8 GB | ~83.5 GiB | ~156 GiB | ⛔ | ❌ |
+| 64 | 2048 | 32.8 GB | ~668 GiB | ~1,244 GiB | ⛔ | ❌ |
 
 ## 5.4 扩展到 70B 和 175B
 
@@ -648,10 +648,109 @@ Np=4 时，每卡 38.8 GB——正好在 A100-80G / H100-80G 的舒适区内。
 
 # 第 6 章：推理 vs 训练显存
 
-## 6.1 推理 vs 训练的显存
+> **知识定位**：前 5 章聚焦训练显存。推理只做前向——不需要梯度、Adam 状态、master weights 和激活值缓存，但引入了 KV Cache 作为新的显存主体。本章用差异分析对照两种场景。
 
-|                | 推理                                                        | 训练                             |
-| 
+## 6.1 推理不需要什么
+
+推理只做前向传播，不反向、不更新。回顾第 1 章的 Model States 表格，可以直接划掉四行：
+
+| 组件 | 训练 | 推理 | 原因 |
+|------|------|------|------|
+| 模型参数 (bf16) | 16.4 GB | 16.4 GB | 必须加载 |
+| 梯度 (bf16) | 16.4 GB | **0** | 不反向，不产生梯度 |
+| Adam m (fp32) | 32.8 GB | **0** | 不更新参数，不需要优化器 |
+| Adam v (fp32) | 32.8 GB | **0** | 同上 |
+| Master weights (fp32) | 32.8 GB | **0** | 不更新，不需要精度锚点 |
+| 激活值 | ~10.4 GiB | **0** | 不反向，用完即弃 |
+| KV Cache | 0 | **需要** | 自回归解码的键值缓存 |
+| **合计** | **~142 GiB** | **16.4 GB + KV** | |
+
+推理的 Model States 从 131.2 GB → 16.4 GB（只剩参数），少了 88%。激活值从 ~10.4 GiB → 0——前向传播过程中产生的中间张量用完即弃，不需要缓存供反向使用。但多了一项 KV Cache。
+
+## 6.2 KV Cache 的显存公式
+
+### 6.2.1 为什么需要 KV Cache
+
+自回归生成时，每步只产出一个新 token。第 $t$ 步计算 attention 时，需要与之前 $t-1$ 个历史 token 做 attention。如果没有 KV Cache，每步都要把整条序列重新跑一遍前向——生成长度为 $S$ 的序列需要 $O(S^2)$ 次前向。
+
+KV Cache 的做法：每步计算出当前 token 的 K 和 V 后，把它们追加到缓存。下一步直接复用缓存中的历史 K/V，只算新 token 的 Q 与完整 K/V 做 attention。生成 $S$ 步只做 $S$ 次前向，每次只处理 1 个新 token。
+
+### 6.2.2 通用公式
+
+每层 Attention 需要缓存两份张量——K 和 V。每个的形状为 $[B, n_{kv}, S, d_h]$，以 bf16（2 bytes）存储：
+
+$$M_{kv\_per\_layer} = 4 \times B \times n_{kv} \times S \times d_h$$
+
+其中 4 = 2（K 和 V 两份）× 2（bf16 bytes）。全模型：
+
+$$M_{kv} = 4 \times L \times B \times S \times n_{kv} \times d_h$$
+
+GQA 4:1 下 $n_{kv} \times d_h = d/4$，公式简化为：
+
+$$M_{kv}^{GQA\;4:1} = L \times B \times S \times d$$
+
+### 6.2.3 Qwen3-8B 数值验证
+
+L=36, d=4096, GQA 4:1（$n_{kv}=8$, $d_h=128$）：
+
+| $B$ | $S$ | 单层 KV Cache | 全模型 KV Cache | 参数 | 总推理显存 |
+|-----|-----|--------------|----------------|------|-----------|
+| 1 | 512 | 2 MB | 72 MB | 16.4 GB | ~16.5 GB |
+| 1 | 2048 | 8 MB | 288 MB | 16.4 GB | ~16.7 GB |
+| 1 | 8192 | 32 MB | 1.15 GB | 16.4 GB | ~17.6 GB |
+| 1 | 32768 | 128 MB | 4.6 GB | 16.4 GB | ~21.0 GB |
+| 8 | 2048 | 64 MB | 2.3 GB | 16.4 GB | ~18.7 GB |
+| 64 | 2048 | 512 MB | 18.4 GB | 16.4 GB | ~34.8 GB |
+
+逐项验证（B=1, S=2048）：单层 K = $1 \times 8 \times 2048 \times 128 \times 2 = 4$ MB。单层 V = 4 MB。单层合计 = 8 MB。全模型 = $36 \times 8 = 288$ MB ✓。与简化公式 $L \times B \times S \times d = 36 \times 1 \times 2048 \times 4096 \approx 288$ MB 一致 ✓。
+
+### 6.2.4 KV Cache 的标度特性
+
+KV Cache 随 $B$、$S$、$L$ 线性增长（$\propto BLS$），不像训练激活值有 $S^2$ 项。这意味着：
+
+- **长序列推理**的主要瓶颈是 KV Cache（而非计算），$S=128K$ 时 KV Cache ≈ 18 GB
+- **大批量推理**（高吞吐在线服务）的瓶颈同样是 KV Cache——$B=64, S=2048$ 时 KV Cache 已达 18.4 GB
+- GQA 把 KV Cache 压到 MHA 的 $1/g$（4:1 时压到 1/4），MQA（$n_{kv}=1$）再压一个 $n_{kv}$ 倍
+
+对比 GQA 4:1 vs MHA（Qwen3-8B, B=1, S=2048）：
+
+$$M_{kv}^{MHA} = 4 \times 36 \times 1 \times 32 \times 2048 \times 128 = 1.15 \text{ GB} \quad \text{vs} \quad M_{kv}^{GQA\;4:1} = 288 \text{ MB}$$
+
+GQA 省了 4× 的 KV Cache 显存——这也是 GQA/MQA 成为现代 LLM 标配的核心原因之一。
+
+## 6.3 推理 vs 训练：完整显存账单
+
+| 维度 | 训练 | 推理 |
+|------|------|------|
+| 参数 | 16.4 GB (bf16) | 16.4 GB (bf16 / 量化) |
+| 梯度 | 16.4 GB | 0 |
+| Adam m + v | 65.6 GB | 0 |
+| Master weights | 32.8 GB | 0 |
+| 激活值 | ~10.4 GiB（缓存供反向） | 逐层用完即弃 |
+| KV Cache | 0 | 随 S 增长（B=1, S=2K → 0.3 GiB） |
+| 框架 / 通信开销 | ~3 GiB | ~0.2 GiB |
+| **Qwen3-8B 总计** | **~142 GiB** | **~16.7 GiB** (B=1, S=2K) |
+| 单卡 A100-80G | ⛔ 需 ZeRO-3 + AC | ✅ 轻松 |
+| 主要瓶颈 | Model States（132 GB） | KV Cache（长序列 / 大批量时） |
+
+**核心洞察**：推理显存约为训练显存的 1/9。去掉反向传播相关的状态（梯度 + Adam + 激活值）释放了 ~128 GB，即使加上 KV Cache（~0.3 GB），总显存仍然很小。只有在超长序列（$S > 100K$）或超大 batch（$B > 100$）时，KV Cache 才会成为推理的显存瓶颈。
+
+## 6.4 推理省显存技术（简要导览）
+
+本章前面算的是「裸」推理显存（bf16 参数 + 完整 KV Cache）。实际部署中，以下技术可以进一步压缩：
+
+| 技术 | 省什么 | 8B 模型效果（B=1, S=2K） | 所属 Phase |
+|------|--------|------------------------|-----------|
+| GQA / MQA | 减少 K/V 头数 | MQA: KV Cache 288 → 36 MB | Phase 1 |
+| KV Cache 量化 (INT8 / FP8) | KV Cache 精度 | 288 → ~144 MB | Phase 2 (W8A8) |
+| 模型量化 (INT4 / GPTQ / AWQ) | 参数显存 | 16.4 GB → ~4-6 GB | Phase 2 (W8A8) |
+| PagedAttention | 消除 KV Cache 碎片 | 释放 ~10-30% 浪费 | Phase 2 |
+| RadixAttention | 多请求前缀共享去重 | 共享前缀仅存一份 KV | Phase 2 |
+| MLA | 缓存压缩 latent 替代 K/V | KV Cache ~1/5-1/10 | Phase 2 (MLA) |
+
+MQA（Multi-Query Attention，$n_{kv}=1$）把 KV Cache 再压 $n_{kv}$ 倍。Qwen3-8B GQA 4:1 下 KV Cache = 288 MB；若改成 MQA，KV Cache = $4 \times 36 \times 1 \times 1 \times 2048 \times 128 = 36$ MB——只有 GQA 的 1/8。
+
+MLA（Multi-head Latent Attention，DeepSeek-V2/V3）更进一步——不直接缓存 K 和 V，而是缓存一个低秩压缩的 latent vector，推理时通过吸收矩阵（absorbed projection）当场重建 K 和 V。详见 [MLA 子项目](../../Phase2_Architecture/MLA/)。
 
 # 附录 A：模型参数速查表
 
@@ -698,6 +797,6 @@ Np=4 时，每卡 38.8 GB——正好在 A100-80G / H100-80G 的舒适区内。
 
 **场景：推理（inference）**
 - Model States = 参数(2N) + KV Cache
-- KV Cache = $2 \times n_{layers} \times n_{kv\_heads} \times d_{head} \times S$ bytes
-- Qwen3-8B, S=2048: KV Cache = $2 \times 36 \times 8 \times 128 \times 2048 = 144$ MB（总）
-- 总推理显存 = 16.4 GB + 0.144 GB ≈ 16.5 GB（远小于训练的 141 GB）
+- KV Cache = $4 \times n_{layers} \times n_{kv\_heads} \times d_{head} \times S$ bytes（$4 = 2_{\text{K,V}} \times 2_{\text{bf16 bytes}}$）
+- Qwen3-8B, S=2048: KV Cache = $4 \times 36 \times 8 \times 128 \times 2048 \approx 288$ MB（总）
+- 总推理显存 = 16.4 GB + 0.29 GB ≈ 16.7 GB（远小于训练的 ~142 GiB）

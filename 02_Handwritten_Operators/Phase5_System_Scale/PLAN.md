@@ -15,24 +15,24 @@ Part 3（Day 71-74）：序列与专家 — Ring Attention / Expert Parallelism
 Part 4（Day 75-76）：整合 — 混合策略推演 + 知识收束
 ```
 
-|  天  | 日期 | 主题 | 类型 | 预计时间 | 状态 |
-| :-: | --- | --- | :-: | :--: | :--: |
-| 61 | — | FLOPs 推演 — Transformer 前向计算量 | 📐 数学推导 | 3h | ⬜ |
-| 62 | — | 显存建模 — 为什么单卡装不下 | 📐 数学推导 | 3h | ⬜ |
-| 63 | — | 通信原语 — 6 种集合通信 + Ring-AllReduce 手撕 | 💻 编码 | 3h | ⬜ |
-| 64 | — | 通信带宽直觉 — 计算/通信比率 | 📐 推导+💻 | 2.5h | ⬜ |
-| 65 | — | Tensor Parallelism — ColumnParallel + RowParallel | 💻 编码 | 3h | ⬜ |
-| 66 | — | TP 进阶 — 完整 Transformer Block 切分 | 💻 编码+📐 画图 | 3h | ⬜ |
-| 67 | — | Pipeline Parallelism — GPipe 与泡率公式 | 📐 画图+公式 | 3h | ⬜ |
-| 68 | — | PP 进阶 — 1F1B · Interleaved · DualPipe | 📐 画图+阅读 | 3h | ⬜ |
-| 69 | — | ZeRO — 三级显存递进手推 | 💻 Dict 模拟 | 3h | ⬜ |
-| 70 | — | ZeRO 实战 — FSDP2 + 组合策略 | 💻 编码+阅读 | 2.5h | ⬜ |
-| 71 | — | Ring Attention — 核心算法手撕 | 💻 编码 | 3.5h | ⬜ |
-| 72 | — | Ring Attention — Causal 变体 + Ulysses 对比 | 💻 编码+阅读 | 3h | ⬜ |
-| 73 | — | Expert Parallelism — MoE 分布式路由 | 💻 编码 | 3h | ⬜ |
-| 74 | — | EP 进阶 — Capacity Factor + DeepSeek 实战 | 💻 编码+阅读 | 3h | ⬜ |
-| 75 | — | 混合并行 — 策略推演 | 📐 案例推演 | 3h | ⬜ |
-| 76 | — | 收束 — 知识地图 + 工业前沿巡览 | 📐 画图+写作 | 2.5h | ⬜ |
+|  天  | 日期  | 主题                                                |     类型      | 预计时间 | 状态  |
+| :-: | --- | ------------------------------------------------- | :---------: | :--: | :-: |
+| 61  | —   | FLOPs 推演 — Transformer 前向计算量                      |   📐 数学推导   |  3h  |  ⬜  |
+| 62  | —   | 显存建模 — 为什么单卡装不下                                   |   📐 数学推导   |  3h  |  ⬜  |
+| 63  | —   | 通信原语 — 6 种集合通信 + Ring-AllReduce 手撕                |    💻 编码    |  3h  |  ⬜  |
+| 64  | —   | 通信带宽直觉 — 计算/通信比率                                  |  📐 推导+💻   | 2.5h |  ⬜  |
+| 65  | —   | Tensor Parallelism — ColumnParallel + RowParallel |    💻 编码    |  3h  |  ⬜  |
+| 66  | —   | TP 进阶 — 完整 Transformer Block 切分                   | 💻 编码+📐 画图 |  3h  |  ⬜  |
+| 67  | —   | Pipeline Parallelism — GPipe 与泡率公式                |  📐 画图+公式   |  3h  |  ⬜  |
+| 68  | —   | PP 进阶 — 1F1B · Interleaved · DualPipe             |  📐 画图+阅读   |  3h  |  ⬜  |
+| 69  | —   | ZeRO — 三级显存递进手推                                   | 💻 Dict 模拟  |  3h  |  ⬜  |
+| 70  | —   | ZeRO 实战 — FSDP2 + 组合策略                            |  💻 编码+阅读   | 2.5h |  ⬜  |
+| 71  | —   | Ring Attention — 核心算法手撕                           |    💻 编码    | 3.5h |  ⬜  |
+| 72  | —   | Ring Attention — Causal 变体 + Ulysses 对比           |  💻 编码+阅读   |  3h  |  ⬜  |
+| 73  | —   | Expert Parallelism — MoE 分布式路由                    |    💻 编码    |  3h  |  ⬜  |
+| 74  | —   | EP 进阶 — Capacity Factor + DeepSeek 实战             |  💻 编码+阅读   |  3h  |  ⬜  |
+| 75  | —   | 混合并行 — 策略推演                                       |   📐 案例推演   |  3h  |  ⬜  |
+| 76  | —   | 收束 — 知识地图 + 工业前沿巡览                                |  📐 画图+写作   | 2.5h |  ⬜  |
 
 ---
 
@@ -125,12 +125,12 @@ Part 4（Day 75-76）：整合 — 混合策略推演 + 知识收束
 
 #### 第一步：读 ZeRO 论文的显存分析（约 30 分钟）
 
-- [ ] **精读** [ZeRO Paper](https://arxiv.org/abs/1910.02054) §2「Where Did All the Memory Go?」（必读，20 分钟）
+- [x] **精读** [ZeRO Paper](https://arxiv.org/abs/1910.02054) §2「Where Did All the Memory Go?」（必读，20 分钟）
   - **图 1**：显存分解饼图——这张图背下来。参数(青色)、梯度(橙色)、Adam m(绿色)、Adam v(红色)、激活值(蓝色)
   - **表 1**：逐项数据和百分比——把数字抄到你的 notebook 里
   - 读完问自己：为什么 Activation（蓝色）的占比随模型规模变化？什么情况下 Activation 反而比 Adam 状态占得多？
   - 跳过 §3（DP 基础）——你已经懂了
-  - **选读** [Activation Checkpointing (HF Blog)](https://huggingface.co/docs/transformers/perf_train_gpu_many#activation-checkpointing)（5 分钟）
+  - **选读** [Gradient Checkpointing (HF Docs)](https://huggingface.co/docs/transformers/v5.6.2/grad_checkpointing) 或 [Ultra-scale Playbook Notes](https://desh2608.github.io/2025-10-30-ultrascale-notes/)（5 分钟）
     - 理解一句话：每隔 N 层存一次激活值 → 反向时重算 → 显存省了，FLOPs 多了 33%
 
 #### 第二步：Jupyter 显存账单（约 2 小时）

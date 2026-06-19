@@ -93,7 +93,8 @@ class SwiGLUFFN(nn.Module):
 2. $H' \pmod M = 0$ （其中 $M$ 是 `multiple_of`）
 
 这个操作在数学上等价于：
-$$H' = \lceil rac{H}{M} ceil 	imes M$$
+$$H' = \lceil rac{H}{M} 
+ceil 	imes M$$
 
 ### 2.2 算术逻辑拆解 (Step-by-Step Logic)
 
