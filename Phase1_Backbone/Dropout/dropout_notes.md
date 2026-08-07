@@ -8,8 +8,8 @@
 
 ### Part I: Dropout 数学与工程原理
 
-1. [反向 Dropout 是什么？为什么需要它？](#反向dropout是什么为什么我们需要反向dropout)
-2. [布尔张量的显存与类型转换](#pytorch中布尔张量显存存储需要消耗多少空间布尔张量在作乘法时是否会被自动转换为浮点数参与不需要显示float)
+1. [反向 Dropout 是什么？为什么需要它？](#反向dropout是什么？为什么我们需要反向dropout？)
+2. [布尔张量的显存与类型转换](#pytorch中布尔张量显存存储需要消耗多少空间？布尔张量在作乘法时是否会被自动转换为浮点数1.0,0.0参与，不需要显示.float()?)
 3. [为什么不要显式 mask.float()](#为什么在dropout做x--mask时不建议显示转换maskfloat)
 4. [Type Promotion 类型提升机制](#pytorch中的type-promotion类型提升机制是怎样的)
 
